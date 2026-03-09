@@ -1,1 +1,1 @@
-worker: python3 scheduler.py
+worker: /app/venv/bin/python scheduler.py
