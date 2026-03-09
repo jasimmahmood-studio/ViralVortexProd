@@ -1,7 +1,7 @@
 """
 Step 1: Fetch Trending Topics
-Sources: YouTube API, YouTube scrape, BBC RSS, HackerNews, Wikipedia, fallback
-Reddit and Google Trends removed (both blocked)
+Sources: YouTube API, YouTube scrape, BBC RSS, HackerNews, NewsAPI, Guardian RSS, fallback
+Wikipedia removed (403), Reddit removed (403), Google Trends removed (404)
 """
 
 import os
@@ -13,6 +13,13 @@ from datetime import datetime
 import random
 
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "").strip()
+NEWS_API_KEY    = os.environ.get("NEWS_API_KEY", "").strip()
+
+HEADERS = {
+    "User-Agent": "ViralVortex/1.0 (https://github.com/jasimmahmood-studio/viralvortex; trending bot)",
+    "Accept": "application/json, text/html, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 # ────────────────────────────────────────────────────────────
@@ -27,10 +34,11 @@ def fetch_youtube_api():
             "https://www.googleapis.com/youtube/v3/videos",
             params={"part": "snippet", "chart": "mostPopular",
                     "regionCode": "US", "maxResults": 20, "key": YOUTUBE_API_KEY},
-            timeout=15
+            headers=HEADERS, timeout=15
         )
         r.raise_for_status()
-        topics = [i["snippet"]["title"] for i in r.json().get("items", []) if i.get("snippet", {}).get("title")]
+        topics = [i["snippet"]["title"] for i in r.json().get("items", [])
+                  if i.get("snippet", {}).get("title")]
         print(f"✅ YouTube API: {len(topics)} topics")
         return topics
     except Exception as e:
@@ -43,13 +51,10 @@ def fetch_youtube_api():
 # ────────────────────────────────────────────────────────────
 def fetch_youtube_scrape():
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        r = requests.get("https://www.youtube.com/feed/trending", headers=headers, timeout=20)
+        r = requests.get(
+            "https://www.youtube.com/feed/trending",
+            headers=HEADERS, timeout=20
+        )
         r.raise_for_status()
         titles = re.findall(r'"title":\{"runs":\[\{"text":"([^"]{10,100})"\}', r.text)
         seen, unique = set(), []
@@ -65,7 +70,7 @@ def fetch_youtube_scrape():
 
 
 # ────────────────────────────────────────────────────────────
-# METHOD 3: BBC News RSS (always works)
+# METHOD 3: BBC News RSS
 # ────────────────────────────────────────────────────────────
 def fetch_bbc_rss():
     feeds = [
@@ -76,41 +81,39 @@ def fetch_bbc_rss():
     topics = []
     for url in feeds:
         try:
-            r = requests.get(url, timeout=15)
+            r = requests.get(url, headers=HEADERS, timeout=15)
             r.raise_for_status()
-            # Clean XML
-            text = r.text
-            text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+            text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', r.text)
             root = ET.fromstring(text.encode('utf-8'))
             titles = [item.findtext("title") for item in root.findall(".//item")]
             titles = [t.strip() for t in titles if t and len(t.strip()) > 10]
             topics.extend(titles[:5])
         except Exception as e:
-            print(f"⚠️  BBC RSS {url} error: {e}")
+            print(f"⚠️  BBC RSS error: {e}")
     if topics:
         print(f"✅ BBC RSS: {len(topics)} topics")
     return topics
 
 
 # ────────────────────────────────────────────────────────────
-# METHOD 4: HackerNews Top Stories (always works, no auth)
+# METHOD 4: HackerNews Top Stories
 # ────────────────────────────────────────────────────────────
 def fetch_hackernews():
     try:
         r = requests.get(
             "https://hacker-news.firebaseio.com/v0/topstories.json",
-            timeout=10
+            headers=HEADERS, timeout=10
         )
         r.raise_for_status()
-        ids = r.json()[:10]
+        ids = r.json()[:8]
         topics = []
         for story_id in ids:
             try:
-                story = requests.get(
+                s = requests.get(
                     f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json",
-                    timeout=5
+                    headers=HEADERS, timeout=5
                 ).json()
-                title = story.get("title", "")
+                title = s.get("title", "")
                 if title and len(title) > 10:
                     topics.append(title)
             except Exception:
@@ -123,39 +126,79 @@ def fetch_hackernews():
 
 
 # ────────────────────────────────────────────────────────────
-# METHOD 5: Wikipedia Current Events (always works, no auth)
+# METHOD 5: The Guardian RSS (free, no key needed)
 # ────────────────────────────────────────────────────────────
-def fetch_wikipedia_trending():
+def fetch_guardian_rss():
+    feeds = [
+        "https://www.theguardian.com/world/rss",
+        "https://www.theguardian.com/technology/rss",
+        "https://www.theguardian.com/culture/rss",
+    ]
+    topics = []
+    for url in feeds:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=15)
+            r.raise_for_status()
+            text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', r.text)
+            root = ET.fromstring(text.encode('utf-8'))
+            titles = [item.findtext("title") for item in root.findall(".//item")]
+            titles = [t.strip() for t in titles if t and len(t.strip()) > 10]
+            topics.extend(titles[:4])
+        except Exception as e:
+            print(f"⚠️  Guardian RSS error: {e}")
+    if topics:
+        print(f"✅ Guardian RSS: {len(topics)} topics")
+    return topics
+
+
+# ────────────────────────────────────────────────────────────
+# METHOD 6: Reuters RSS (free, no key needed)
+# ────────────────────────────────────────────────────────────
+def fetch_reuters_rss():
+    feeds = [
+        "https://feeds.reuters.com/reuters/topNews",
+        "https://feeds.reuters.com/reuters/technologyNews",
+    ]
+    topics = []
+    for url in feeds:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=15)
+            r.raise_for_status()
+            text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', r.text)
+            root = ET.fromstring(text.encode('utf-8'))
+            titles = [item.findtext("title") for item in root.findall(".//item")]
+            titles = [t.strip() for t in titles if t and len(t.strip()) > 10]
+            topics.extend(titles[:4])
+        except Exception as e:
+            print(f"⚠️  Reuters RSS error: {e}")
+    if topics:
+        print(f"✅ Reuters RSS: {len(topics)} topics")
+    return topics
+
+
+# ────────────────────────────────────────────────────────────
+# METHOD 7: NewsAPI (optional key)
+# ────────────────────────────────────────────────────────────
+def fetch_newsapi():
+    if not NEWS_API_KEY:
+        return []
     try:
-        from datetime import date
-        today = date.today()
-        url = f"https://en.wikipedia.org/w/api.php"
-        params = {
-            "action": "query",
-            "list": "mostviewed",
-            "pvimoffset": 0,
-            "pvimtop": 20,
-            "pvimlimit": 20,
-            "format": "json",
-        }
-        r = requests.get(url, params=params, timeout=15)
+        r = requests.get(
+            "https://newsapi.org/v2/top-headlines",
+            params={"country": "us", "pageSize": 20, "apiKey": NEWS_API_KEY},
+            headers=HEADERS, timeout=15
+        )
         r.raise_for_status()
-        pages = r.json().get("query", {}).get("mostviewed", [])
-        topics = []
-        skip = {"Main_Page", "Special:Search", "-", "Wikipedia", ""}
-        for p in pages:
-            title = p.get("title", "").replace("_", " ").strip()
-            if title and title not in skip and len(title) > 3:
-                topics.append(title)
-        print(f"✅ Wikipedia Trending: {len(topics)} topics")
-        return topics[:10]
+        topics = [a["title"] for a in r.json().get("articles", []) if a.get("title")][:15]
+        print(f"✅ NewsAPI: {len(topics)} topics")
+        return topics
     except Exception as e:
-        print(f"⚠️  Wikipedia error: {e}")
+        print(f"⚠️  NewsAPI error: {e}")
         return []
 
 
 # ────────────────────────────────────────────────────────────
-# METHOD 6: Evergreen fallback
+# METHOD 8: Evergreen fallback
 # ────────────────────────────────────────────────────────────
 def fetch_fallback_topics():
     topics = [
@@ -182,13 +225,16 @@ def get_trending_topics(limit=10, **kwargs):
     print("\n🔍 Fetching trending topics...")
     print("─" * 40)
 
-    api_topics   = fetch_youtube_api()
-    scrape_topics = fetch_youtube_scrape()
-    bbc_topics   = fetch_bbc_rss()
-    hn_topics    = fetch_hackernews()
-    wiki_topics  = fetch_wikipedia_trending()
+    api_topics      = fetch_youtube_api()
+    scrape_topics   = fetch_youtube_scrape()
+    bbc_topics      = fetch_bbc_rss()
+    hn_topics       = fetch_hackernews()
+    guardian_topics = fetch_guardian_rss()
+    reuters_topics  = fetch_reuters_rss()
+    news_topics     = fetch_newsapi()
 
-    all_topics = api_topics + scrape_topics + bbc_topics + hn_topics + wiki_topics
+    all_topics = (api_topics + scrape_topics + bbc_topics +
+                  hn_topics + guardian_topics + reuters_topics + news_topics)
 
     if not all_topics:
         print("⚠️  All sources failed — using fallback")
@@ -202,7 +248,7 @@ def get_trending_topics(limit=10, **kwargs):
             seen.add(key)
             unique.append(t)
 
-    unique = unique[:limit]
+    unique   = unique[:limit]
     selected = unique[0] if unique else "Top trending topics this week"
 
     result = {
@@ -213,7 +259,9 @@ def get_trending_topics(limit=10, **kwargs):
             "youtube_scrape": len(scrape_topics),
             "bbc_rss":        len(bbc_topics),
             "hackernews":     len(hn_topics),
-            "wikipedia":      len(wiki_topics),
+            "guardian_rss":   len(guardian_topics),
+            "reuters_rss":    len(reuters_topics),
+            "newsapi":        len(news_topics),
         },
         "timestamp": datetime.now().isoformat(),
     }
