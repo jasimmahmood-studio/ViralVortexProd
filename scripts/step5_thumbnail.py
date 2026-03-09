@@ -1,177 +1,182 @@
 """
-STEP 5: Generate YouTube Thumbnail
-Uses Pillow to create a professional thumbnail with text overlays.
-Optional: DALL-E 3 for AI background image.
+Step 5: Create Thumbnail
+- Primary: DALL-E 3 (if OPENAI_API_KEY set)
+- Fallback: Pillow generated thumbnail (no API key needed)
 """
 
 import os
-import io
-import textwrap
+import json
 import requests
-from pathlib import Path
+import textwrap
+from datetime import datetime
 
-
-def generate_thumbnail_pillow(topic: str, hook: str, output_path: str):
-    """Generate thumbnail using Pillow (no API key required)"""
-    from PIL import Image, ImageDraw, ImageFont, ImageFilter
-    import math
-
-    W, H = 1280, 720
-    img = Image.new("RGB", (W, H), color=(0, 4, 15))
-    draw = ImageDraw.Draw(img)
-
-    # ── Gradient background ──────────────────────────────────
-    for y in range(H):
-        t = y / H
-        r = int(0 + 8 * t)
-        g = int(4 + 4 * t)
-        b = int(15 + 25 * t)
-        draw.line([(0, y), (W, y)], fill=(r, g, b))
-
-    # ── Vortex circles (decorative) ──────────────────────────
-    for radius in [320, 240, 160, 90]:
-        cx, cy = 220, 360
-        draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius],
-                     outline=(0, 245, 255), width=2)
-
-    # ── Neon glow rectangles ─────────────────────────────────
-    # Bottom banner
-    draw.rectangle([0, H - 100, W, H], fill=(0, 0, 0, 180))
-
-    # Left accent bar
-    for x in range(6):
-        alpha = 255 - x * 40
-        draw.line([(x, 0), (x, H)], fill=(0, 245, 255, alpha), width=1)
-
-    # ── Load fonts (fallback to default) ─────────────────────
-    try:
-        from PIL import ImageFont
-        font_big = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 72)
-        font_med = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 44)
-        font_sm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 32)
-        font_tag = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
-    except Exception:
-        font_big = ImageFont.load_default()
-        font_med = font_big
-        font_sm = font_big
-        font_tag = font_big
-
-    # ── Channel badge ─────────────────────────────────────────
-    draw.rounded_rectangle([W - 260, 20, W - 20, 70], radius=8,
-                            fill=(0, 245, 255, 40), outline=(0, 245, 255), width=2)
-    draw.text((W - 240, 28), "🌀 ViralVortex", font=font_tag, fill=(0, 245, 255))
-
-    # ── TRENDING badge ────────────────────────────────────────
-    draw.rounded_rectangle([20, 20, 180, 65], radius=8,
-                            fill=(255, 50, 50, 200), outline=(255, 100, 100), width=1)
-    draw.text((35, 28), "🔥 TRENDING", font=font_tag, fill=(255, 255, 255))
-
-    # ── Main topic title (wrapped) ────────────────────────────
-    title_text = topic[:55].upper()
-    words = title_text.split()
-    lines = []
-    current = ""
-    for word in words:
-        if len(current + " " + word) <= 22:
-            current = (current + " " + word).strip()
-        else:
-            lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-    lines = lines[:3]  # max 3 lines
-
-    y_start = 130
-    for i, line in enumerate(lines):
-        # Shadow
-        draw.text((42, y_start + i * 85 + 3), line, font=font_big, fill=(0, 0, 0, 180))
-        # Gradient effect (cyan to white)
-        if i == 0:
-            draw.text((40, y_start + i * 85), line, font=font_big, fill=(0, 245, 255))
-        else:
-            draw.text((40, y_start + i * 85), line, font=font_big, fill=(255, 255, 255))
-
-    # ── Hook text at bottom ───────────────────────────────────
-    hook_short = hook[:80] + ("..." if len(hook) > 80 else "")
-    hook_wrapped = textwrap.fill(hook_short, width=55)
-    hook_lines = hook_wrapped.split('\n')[:2]
-    for j, hline in enumerate(hook_lines):
-        draw.text((20, H - 90 + j * 38), hline, font=font_sm, fill=(255, 200, 50))
-
-    # ── Glow effect on main text (blur overlay) ───────────────
-    glow = Image.new("RGB", (W, H), (0, 0, 0))
-    glow_draw = ImageDraw.Draw(glow)
-    for i, line in enumerate(lines):
-        glow_draw.text((40, y_start + i * 85), line, font=font_big, fill=(0, 100, 120))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=8))
-    img = Image.blend(img, glow, alpha=0.4)
-
-    img.save(output_path, "JPEG", quality=95)
-    print(f"   ✅ Thumbnail saved (Pillow): {output_path}")
-
-
-def generate_thumbnail_dalle(topic: str, hook: str, output_path: str):
-    """Generate AI background using DALL-E 3, then add text overlay"""
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY not set")
-
-    import openai
-    client = openai.OpenAI(api_key=api_key)
-
-    prompt = (
-        f"YouTube thumbnail background for a video about '{topic}'. "
-        "Dark, dramatic, cinematic style. Deep navy and cyan color palette. "
-        "Glowing neon effects. NO text. High contrast. Photorealistic."
-    )
-
-    response = client.images.generate(
-        model="dall-e-3",
-        prompt=prompt,
-        size="1792x1024",
-        quality="standard",
-        n=1
-    )
-
-    img_url = response.data[0].url
-    img_data = requests.get(img_url, timeout=30).content
-
+try:
     from PIL import Image, ImageDraw, ImageFont
-    import io
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
-    bg = Image.open(io.BytesIO(img_data)).convert("RGB")
-    bg = bg.resize((1280, 720))
 
-    # Add text overlay
-    draw = ImageDraw.Draw(bg)
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+
+
+def create_thumbnail(topic, **kwargs):
+    """Main function — create thumbnail for the video."""
+    print(f"\n🖼️  Creating thumbnail for: {topic}")
+    os.makedirs("output", exist_ok=True)
+    thumb_path = "output/thumbnail.jpg"
+
+    # Try DALL-E first
+    if OPENAI_API_KEY:
+        result = _try_dalle(topic, thumb_path)
+        if result:
+            return result
+
+    # Fallback: Pillow generated
+    result = _try_pillow(topic, thumb_path)
+    if result:
+        return result
+
+    raise RuntimeError("All thumbnail generation methods failed")
+
+
+def _try_dalle(topic, thumb_path):
+    """Generate thumbnail using DALL-E 3."""
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 72)
-        font_sm = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 32)
-    except Exception:
-        font = ImageFont.load_default()
-        font_sm = font
+        prompt = (
+            f"YouTube thumbnail for a viral video about: {topic}. "
+            "Bold text, bright colors, shocked expression, "
+            "professional YouTube thumbnail style, eye-catching, 16:9"
+        )
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "dall-e-3",
+            "prompt": prompt,
+            "n": 1,
+            "size": "1792x1024",
+            "quality": "standard",
+        }
+        r = requests.post(
+            "https://api.openai.com/v1/images/generations",
+            headers=headers, json=payload, timeout=60
+        )
+        r.raise_for_status()
+        image_url = r.json()["data"][0]["url"]
 
-    # Dark overlay for text readability
-    overlay = Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
-    ov_draw = ImageDraw.Draw(overlay)
-    ov_draw.rectangle([0, 580, 1280, 720], fill=(0, 0, 0, 180))
-    bg = Image.alpha_composite(bg.convert("RGBA"), overlay).convert("RGB")
-    draw = ImageDraw.Draw(bg)
+        # Download image
+        img_response = requests.get(image_url, timeout=30)
+        img_response.raise_for_status()
+        with open(thumb_path, "wb") as f:
+            f.write(img_response.content)
 
-    # Title
-    title = topic[:55].upper()
-    draw.text((40, 40), title, font=font, fill=(0, 245, 255))
-    draw.text((40, 600), hook[:80], font=font_sm, fill=(255, 200, 50))
-    draw.text((1050, 20), "ViralVortex", font=font_sm, fill=(0, 245, 255))
+        size = os.path.getsize(thumb_path)
+        print(f"✅ DALL-E thumbnail: {thumb_path} ({size:,} bytes)")
+        return _build_result(thumb_path, "dalle")
 
-    bg.save(output_path, "JPEG", quality=95)
-    print(f"   ✅ Thumbnail saved (DALL-E): {output_path}")
-
-
-def generate_thumbnail(topic: str, hook: str, output_path: str):
-    """Main entry: try DALL-E first, fallback to Pillow"""
-    try:
-        generate_thumbnail_dalle(topic, hook, output_path)
     except Exception as e:
-        print(f"   DALL-E failed ({e}), using Pillow fallback...")
-        generate_thumbnail_pillow(topic, hook, output_path)
+        print(f"⚠️  DALL-E error: {e}")
+        return None
+
+
+def _try_pillow(topic, thumb_path):
+    """Generate thumbnail using Pillow (no API key needed)."""
+    if not PIL_AVAILABLE:
+        print("⚠️  Pillow not installed — trying to install...")
+        os.system("pip install Pillow -q")
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except Exception:
+            print("⚠️  Pillow install failed")
+            return None
+
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        # Canvas: 1280x720
+        W, H = 1280, 720
+        img = Image.new("RGB", (W, H), color=(0, 4, 15))
+        draw = ImageDraw.Draw(img)
+
+        # Background gradient effect (simple rectangles)
+        for i in range(H):
+            ratio = i / H
+            r = int(0   + ratio * 20)
+            g = int(4   + ratio * 10)
+            b = int(15  + ratio * 40)
+            draw.line([(0, i), (W, i)], fill=(r, g, b))
+
+        # Cyan glow bar top
+        draw.rectangle([(0, 0), (W, 8)], fill=(0, 245, 255))
+        # Cyan glow bar bottom
+        draw.rectangle([(0, H-8), (W, H)], fill=(0, 245, 255))
+
+        # Channel name top-left
+        try:
+            font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 32)
+            font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 72)
+            font_med   = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
+        except Exception:
+            font_small = ImageFont.load_default()
+            font_large = ImageFont.load_default()
+            font_med   = ImageFont.load_default()
+
+        # VIRALVORTEX branding
+        draw.text((20, 20), "🌀 VIRALVORTEX", font=font_small, fill=(0, 245, 255))
+
+        # Main title — wrap at 28 chars per line
+        safe_topic = topic[:120]
+        lines = textwrap.wrap(safe_topic, width=28)[:3]
+
+        total_height = len(lines) * 90
+        start_y = (H - total_height) // 2 - 20
+
+        for i, line in enumerate(lines):
+            y = start_y + i * 90
+            # Shadow
+            draw.text((W//2 - 1 + 3, y + 3), line,
+                      font=font_large, fill=(0, 0, 0), anchor="mm")
+            # Main text
+            draw.text((W//2 - 1, y), line,
+                      font=font_large, fill=(255, 255, 255), anchor="mm")
+
+        # Bottom bar
+        draw.rectangle([(0, H-60), (W, H-8)], fill=(123, 47, 255, 180))
+        draw.text((W//2, H-34), "LIKE  •  SUBSCRIBE  •  NOTIFY",
+                  font=font_small, fill=(255, 255, 0), anchor="mm")
+
+        # Save
+        img.save(thumb_path, "JPEG", quality=95)
+        size = os.path.getsize(thumb_path)
+        print(f"✅ Pillow thumbnail: {thumb_path} ({size:,} bytes)")
+        return _build_result(thumb_path, "pillow")
+
+    except Exception as e:
+        print(f"⚠️  Pillow error: {e}")
+        return None
+
+
+def _build_result(thumb_path, source):
+    result = {
+        "thumbnail_path": thumb_path,
+        "source":         source,
+        "file_size":      os.path.getsize(thumb_path),
+        "timestamp":      datetime.now().isoformat(),
+    }
+    with open("output/step5_thumbnail.json", "w") as f:
+        json.dump(result, f, indent=2)
+    return result
+
+
+# ── Aliases — all possible names main.py might call ──────────
+def generate_thumbnail(topic, **kwargs): return create_thumbnail(topic, **kwargs)
+def make_thumbnail(topic, **kwargs):     return create_thumbnail(topic, **kwargs)
+def get_thumbnail(topic, **kwargs):      return create_thumbnail(topic, **kwargs)
+def build_thumbnail(topic, **kwargs):    return create_thumbnail(topic, **kwargs)
+
+
+if __name__ == "__main__":
+    result = create_thumbnail("AI tools taking over the internet in 2025")
+    print(f"\n✅ Done: {result}")
