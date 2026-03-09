@@ -1,187 +1,273 @@
 """
-STEP 4: Render Video using FFmpeg + Pexels stock footage
-Creates a full video: B-roll clips + captions + music + voiceover
+Step 4: Create Video
+- Downloads stock footage from Pexels (if API key set)
+- Falls back to animated gradient background (no API key needed)
+- Combines with audio using FFmpeg
+- Adds ViralVortex branding overlay
 """
 
 import os
-import re
 import json
-import time
-import random
-import requests
 import subprocess
-import textwrap
-from pathlib import Path
+import requests
+from datetime import datetime
 
 
-PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "")
-TEMP_DIR = Path("output/temp")
-TEMP_DIR.mkdir(parents=True, exist_ok=True)
+PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "").strip()
 
 
-def search_pexels_videos(query: str, per_page: int = 5) -> list:
-    """Fetch relevant stock video clips from Pexels"""
-    if not PEXELS_API_KEY:
-        return []
+def create_video(topic, script, audio_path, **kwargs):
+    """Main function — create video from topic + audio."""
+    print(f"\n🎬 Creating video for: {topic}")
 
-    url = "https://api.pexels.com/videos/search"
-    headers = {"Authorization": PEXELS_API_KEY}
-    params = {"query": query, "per_page": per_page, "orientation": "landscape", "size": "medium"}
+    os.makedirs("output", exist_ok=True)
+    video_path = "output/video.mp4"
 
+    # Get audio duration
+    duration = _get_audio_duration(audio_path)
+    print(f"⏱️  Audio duration: {duration:.1f}s")
+
+    # Try Pexels footage first
+    background_path = None
+    if PEXELS_API_KEY:
+        background_path = _fetch_pexels_video(topic, duration)
+
+    # Fall back to generated background
+    if not background_path or not os.path.exists(background_path):
+        print("🎨 Generating animated background...")
+        background_path = _create_animated_background(duration)
+
+    # Combine background + audio + branding
+    success = _render_final_video(
+        background_path=background_path,
+        audio_path=audio_path,
+        output_path=video_path,
+        topic=topic,
+        duration=duration,
+    )
+
+    if not success or not os.path.exists(video_path):
+        raise RuntimeError(f"Video rendering failed — file not found: {video_path}")
+
+    size = os.path.getsize(video_path)
+    print(f"✅ Video created: {video_path} ({size:,} bytes)")
+
+    result = {
+        "video_path": video_path,
+        "duration":   duration,
+        "file_size":  size,
+        "timestamp":  datetime.now().isoformat(),
+    }
+
+    with open("output/step4_video.json", "w") as f:
+        json.dump(result, f, indent=2)
+
+    return result
+
+
+def _get_audio_duration(audio_path):
+    """Get audio duration in seconds using ffprobe."""
     try:
-        res = requests.get(url, headers=headers, params=params, timeout=15)
-        res.raise_for_status()
-        data = res.json()
-        clips = []
-        for video in data.get("videos", []):
-            # Prefer HD files
-            files = sorted(video["video_files"], key=lambda x: x.get("width", 0), reverse=True)
-            hd = next((f for f in files if f.get("width", 0) >= 1280), files[0] if files else None)
-            if hd:
-                clips.append({
-                    "url": hd["link"],
-                    "width": hd.get("width", 1920),
-                    "height": hd.get("height", 1080),
-                    "duration": video.get("duration", 10)
-                })
-        return clips
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            audio_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return float(result.stdout.strip())
     except Exception as e:
-        print(f"   Pexels search failed: {e}")
-        return []
+        print(f"⚠️  Could not get duration: {e} — using 60s default")
+        return 60.0
 
 
-def download_clip(url: str, path: str) -> bool:
-    """Download a video clip"""
+def _fetch_pexels_video(topic, duration):
+    """Download a relevant stock video from Pexels."""
     try:
-        res = requests.get(url, stream=True, timeout=60)
-        res.raise_for_status()
+        # Clean topic for search
+        query = " ".join(topic.split()[:4])
+        headers = {"Authorization": PEXELS_API_KEY}
+        response = requests.get(
+            "https://api.pexels.com/videos/search",
+            headers=headers,
+            params={"query": query, "per_page": 5, "orientation": "landscape"},
+            timeout=15,
+        )
+        response.raise_for_status()
+        videos = response.json().get("videos", [])
+
+        for video in videos:
+            # Get best quality file
+            files = sorted(
+                video.get("video_files", []),
+                key=lambda x: x.get("width", 0),
+                reverse=True,
+            )
+            for f in files:
+                if f.get("width", 0) >= 1280:
+                    url = f.get("link")
+                    if url:
+                        path = _download_file(url, "output/background.mp4")
+                        if path:
+                            print(f"✅ Pexels video downloaded")
+                            return path
+
+        print("⚠️  No suitable Pexels video found")
+        return None
+
+    except Exception as e:
+        print(f"⚠️  Pexels error: {e}")
+        return None
+
+
+def _download_file(url, path):
+    """Download a file from URL."""
+    try:
+        response = requests.get(url, stream=True, timeout=60)
+        response.raise_for_status()
         with open(path, "wb") as f:
-            for chunk in res.iter_content(chunk_size=8192):
+            for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
-        return True
+        return path
     except Exception as e:
-        print(f"   Download failed: {e}")
+        print(f"⚠️  Download failed: {e}")
+        return None
+
+
+def _create_animated_background(duration):
+    """Create animated gradient background using FFmpeg."""
+    path = "output/background.mp4"
+    try:
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", (
+                f"color=c=0x00040f:size=1280x720:duration={duration}:rate=30,"
+                "hue=s=1"
+            ),
+            "-vf", (
+                "hue=h=t*20:s=2,"
+                "drawtext=text='':x=0:y=0"
+            ),
+            "-c:v", "libx264",
+            "-t", str(duration),
+            "-pix_fmt", "yuv420p",
+            path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+        if result.returncode != 0 or not os.path.exists(path):
+            # Simpler fallback
+            cmd2 = [
+                "ffmpeg", "-y",
+                "-f", "lavfi",
+                "-i", f"color=c=navy:size=1280x720:duration={duration}:rate=30",
+                "-c:v", "libx264",
+                "-t", str(duration),
+                "-pix_fmt", "yuv420p",
+                path
+            ]
+            subprocess.run(cmd2, capture_output=True, timeout=120)
+
+        print(f"✅ Animated background created")
+        return path
+
+    except Exception as e:
+        print(f"⚠️  Background creation error: {e}")
+        return None
+
+
+def _render_final_video(background_path, audio_path, output_path, topic, duration):
+    """Combine background + audio + text overlay into final video."""
+    try:
+        # Clean topic text for FFmpeg drawtext
+        safe_topic = topic.replace("'", "").replace(":", "").replace('"', '')
+        safe_topic = safe_topic[:60]  # Limit length
+
+        # Wrap long text
+        if len(safe_topic) > 35:
+            words = safe_topic.split()
+            mid = len(words) // 2
+            line1 = " ".join(words[:mid])
+            line2 = " ".join(words[mid:])
+            title_filter = (
+                f"drawtext=text='{line1}':fontcolor=white:fontsize=48:"
+                f"x=(w-text_w)/2:y=(h/2)-60:box=1:boxcolor=black@0.5:boxborderw=10,"
+                f"drawtext=text='{line2}':fontcolor=white:fontsize=48:"
+                f"x=(w-text_w)/2:y=(h/2)+10:box=1:boxcolor=black@0.5:boxborderw=10,"
+            )
+        else:
+            title_filter = (
+                f"drawtext=text='{safe_topic}':fontcolor=white:fontsize=52:"
+                f"x=(w-text_w)/2:y=(h/2)-30:box=1:boxcolor=black@0.5:boxborderw=10,"
+            )
+
+        vf = (
+            title_filter +
+            "drawtext=text='VIRALVORTEX':fontcolor=cyan:fontsize=28:"
+            "x=20:y=20:box=1:boxcolor=black@0.4:boxborderw=6,"
+            "drawtext=text='LIKE  SUBSCRIBE  NOTIFY':fontcolor=yellow:fontsize=22:"
+            "x=(w-text_w)/2:y=h-50:box=1:boxcolor=black@0.5:boxborderw=5"
+        )
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", background_path,
+            "-i", audio_path,
+            "-vf", vf,
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-shortest",
+            "-pix_fmt", "yuv420p",
+            output_path
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
+        if result.returncode != 0:
+            print(f"⚠️  FFmpeg error: {result.stderr[-500:]}")
+            # Try without text overlay
+            cmd_simple = [
+                "ffmpeg", "-y",
+                "-i", background_path,
+                "-i", audio_path,
+                "-c:v", "libx264",
+                "-c:a", "aac",
+                "-shortest",
+                "-pix_fmt", "yuv420p",
+                output_path
+            ]
+            result2 = subprocess.run(cmd_simple, capture_output=True, text=True, timeout=300)
+            if result2.returncode != 0:
+                print(f"⚠️  Simple FFmpeg also failed: {result2.stderr[-300:]}")
+                return False
+
+        print(f"✅ Video rendered: {output_path}")
+        return True
+
+    except Exception as e:
+        print(f"⚠️  Render error: {e}")
         return False
 
 
-def create_fallback_background(output_path: str, duration: int, topic: str):
-    """Create animated gradient background when no stock footage available"""
-    # Dark animated background with text overlay using FFmpeg
-    title_safe = topic[:50].replace("'", "").replace('"', "")
-    cmd = [
-        "ffmpeg", "-y",
-        "-f", "lavfi",
-        "-i", f"color=c=0x00040f:size=1920x1080:rate=30:duration={duration}",
-        "-vf", (
-            f"drawtext=text='ViralVortex':fontsize=80:fontcolor=0x00f5ff:"
-            f"x=(w-text_w)/2:y=(h-text_h)/2-60:alpha=0.6,"
-            f"drawtext=text='{title_safe}':fontsize=40:fontcolor=white:"
-            f"x=(w-text_w)/2:y=(h-text_h)/2+60:alpha=0.8"
-        ),
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-        output_path
-    ]
-    subprocess.run(cmd, check=True, capture_output=True)
+# ── Aliases — all possible names main.py might call ──────────
+def make_video(topic, script, audio_path, **kwargs):
+    return create_video(topic, script, audio_path, **kwargs)
+
+def generate_video(topic, script, audio_path, **kwargs):
+    return create_video(topic, script, audio_path, **kwargs)
+
+def produce_video(topic, script, audio_path, **kwargs):
+    return create_video(topic, script, audio_path, **kwargs)
+
+def render_video(topic, script, audio_path, **kwargs):
+    return create_video(topic, script, audio_path, **kwargs)
 
 
-def get_audio_duration(audio_path: str) -> float:
-    """Get duration of audio file in seconds"""
-    result = subprocess.run(
-        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", audio_path],
-        capture_output=True, text=True
+if __name__ == "__main__":
+    result = create_video(
+        topic="AI tools taking over the internet",
+        script="Welcome to ViralVortex!",
+        audio_path="output/audio.mp3"
     )
-    data = json.loads(result.stdout)
-    for stream in data.get("streams", []):
-        if stream.get("codec_type") == "audio":
-            return float(stream.get("duration", 60))
-    return 60.0
-
-
-def assemble_video(clips: list, audio_path: str, output_path: str, topic: str):
-    """Combine clips, add audio, captions and branding with FFmpeg"""
-
-    audio_duration = get_audio_duration(audio_path)
-    print(f"   Audio duration: {audio_duration:.1f}s")
-
-    if not clips:
-        # No clips — use animated background
-        print("   No stock footage, generating background...")
-        bg_path = str(TEMP_DIR / "background.mp4")
-        create_fallback_background(bg_path, int(audio_duration) + 2, topic)
-        clips_to_use = [bg_path]
-    else:
-        clips_to_use = clips
-
-    # Build concat list — loop clips to fill audio duration
-    concat_file = str(TEMP_DIR / "concat.txt")
-    total = 0
-    concat_entries = []
-    while total < audio_duration:
-        for clip in clips_to_use:
-            concat_entries.append(f"file '{os.path.abspath(clip)}'\n")
-            total += 10  # approximate
-            if total >= audio_duration + 10:
-                break
-
-    with open(concat_file, "w") as f:
-        f.writelines(concat_entries)
-
-    # Temp combined video
-    combined_path = str(TEMP_DIR / "combined.mp4")
-    subprocess.run([
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-        "-i", concat_file,
-        "-t", str(audio_duration + 1),
-        "-vf", "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-r", "30",
-        "-an", combined_path
-    ], check=True, capture_output=True)
-
-    # Add branding overlay + audio
-    title_safe = topic[:45].replace("'", "").replace('"', "").replace(":", "")
-    subprocess.run([
-        "ffmpeg", "-y",
-        "-i", combined_path,
-        "-i", audio_path,
-        "-vf", (
-            # Dark overlay at bottom
-            "drawbox=x=0:y=ih-120:w=iw:h=120:color=black@0.7:t=fill,"
-            # Channel name top-left
-            "drawtext=text='🌀 ViralVortex':fontsize=36:fontcolor=0x00f5ff:"
-            "x=30:y=30:alpha=0.9,"
-            # Topic title at bottom
-            f"drawtext=text='{title_safe}':fontsize=38:fontcolor=white:"
-            "x=30:y=ih-80:alpha=0.95,"
-            # Subscribe reminder
-            "drawtext=text='🔔 Subscribe for Daily Trends':fontsize=28:fontcolor=0xffaa00:"
-            "x=30:y=ih-38:alpha=0.85"
-        ),
-        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-        "-c:a", "aac", "-b:a", "192k",
-        "-shortest",
-        output_path
-    ], check=True, capture_output=True)
-
-    print(f"   ✅ Video rendered: {output_path}")
-
-
-def render_video(audio_path: str, script: dict, topic: str, output_path: str):
-    """Main entry: fetch footage, download, assemble"""
-
-    print(f"   Searching Pexels for: '{topic}'...")
-    raw_clips = search_pexels_videos(topic, per_page=6)
-
-    # Also search generic "viral trending" for filler
-    filler_clips = search_pexels_videos("news viral trending", per_page=3)
-    all_clips_info = raw_clips + filler_clips
-
-    # Download clips
-    local_clips = []
-    for i, clip_info in enumerate(all_clips_info[:6]):
-        clip_path = str(TEMP_DIR / f"clip_{i}.mp4")
-        print(f"   Downloading clip {i+1}/{min(len(all_clips_info), 6)}...")
-        if download_clip(clip_info["url"], clip_path):
-            local_clips.append(clip_path)
-        time.sleep(0.5)  # be nice to Pexels
-
-    assemble_video(local_clips, audio_path, output_path, topic)
+    print(f"\n✅ Done: {result}")
