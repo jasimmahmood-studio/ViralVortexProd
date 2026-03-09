@@ -139,7 +139,7 @@ def fetch_fallback_topics():
     return topics
 
 
-def fetch_trending_topics(limit=10, **kwargs):
+def get_trending_topics(limit=10, **kwargs):
     """Main function — fetches trending topics from all sources."""
     print("\n🔍 Fetching trending topics...")
     print("─" * 40)
@@ -191,9 +191,9 @@ def fetch_trending_topics(limit=10, **kwargs):
 # ── Alias — keeps backward compatibility with any call signature ──
 def fetch_trending_topics(limit=10, **kwargs):
     """Backward-compatible alias for get_trending_topics()."""
-    return fetch_trending_topics(limit=limit)
+    return get_trending_topics(limit=limit)
 
 
 if __name__ == "__main__":
-    result = fetch_trending_topics()
+    result = get_trending_topics()
     print("\n📄 Saved to output/step1_trends.json")
