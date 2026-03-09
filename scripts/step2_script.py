@@ -1,70 +1,106 @@
 """
-STEP 2: Generate Video Script using Claude AI
+Step 2: Generate Video Script using Claude API
+Returns plain string script directly — no dict wrapping issues
 """
 
 import os
 import json
 import anthropic
+from datetime import datetime
 
 
-def generate_script(topic: str) -> dict:
-    """Generate a full YouTube script using Claude"""
+def generate_script(topic, **kwargs):
+    print(f"\n📝 Generating script for: {topic}")
 
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    # ── Read API key ─────────────────────────────────────────
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
-    prompt = f"""You are a viral YouTube content writer for the channel "ViralVortex".
-Write a complete YouTube video script about this trending topic: "{topic}"
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY is not set")
 
-The video should be 7-9 minutes when read aloud (approx 1000-1300 words of narration).
+    if not api_key.startswith("sk-ant-"):
+        raise ValueError(f"ANTHROPIC_API_KEY invalid — must start with sk-ant-, got: {api_key[:10]}")
 
-Return ONLY a valid JSON object with these exact fields:
-{{
-  "title": "YouTube video title (under 70 chars, clickbait but honest)",
-  "hook": "First 15 seconds - shocking opening statement to grab attention",
-  "narration": "Full narration script (everything the voiceover will read - no stage directions)",
-  "description": "YouTube description (200 words, include timestamps, end with subscribe CTA)",
-  "tags": ["tag1", "tag2", ...10 tags max],
-  "full_script": "Complete script with section labels like [HOOK], [BODY], [CTA]"
-}}
+    print(f"🔑 API key: {api_key[:12]}...{api_key[-4:]}")
 
-Rules for the script:
-- Hook must be a jaw-dropping fact or question
-- Body covers 3-5 key points about the topic
-- Use conversational, energetic language
-- End with: "Smash that subscribe button and hit the bell for daily viral content on ViralVortex!"
-- Tags should mix broad and specific keywords"""
+    # ── Call Claude ──────────────────────────────────────────
+    client = anthropic.Anthropic(api_key=api_key)
+
+    prompt = f"""You are a viral YouTube scriptwriter for ViralVortex channel.
+
+Write an energetic spoken script (300-400 words) about this trending topic: {topic}
+
+Rules:
+- Start with a strong hook in the first sentence
+- Keep it conversational and exciting  
+- Include surprising facts or insights
+- End with a call to action (like + subscribe)
+- Write ONLY the spoken words, no stage directions, no headers, no labels
+- Just plain text the narrator will speak
+
+Begin the script now:"""
 
     message = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=3000,
+        max_tokens=1000,
         messages=[{"role": "user", "content": prompt}]
     )
 
-    raw = message.content[0].text
+    # ── Extract text safely ──────────────────────────────────
+    script = ""
 
-    # Strip markdown code fences if present
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip().rstrip("```").strip()
+    # Try content blocks
+    if hasattr(message, "content") and message.content:
+        for block in message.content:
+            if hasattr(block, "text") and block.text:
+                script = block.text.strip()
+                break
 
-    try:
-        script_data = json.loads(raw)
-    except json.JSONDecodeError:
-        # Fallback: extract JSON object
-        import re
-        match = re.search(r'\{.*\}', raw, re.DOTALL)
-        if match:
-            script_data = json.loads(match.group())
-        else:
-            raise ValueError("Claude did not return valid JSON")
+    # Fallback: convert to dict
+    if not script:
+        try:
+            msg_dict = message.model_dump() if hasattr(message, "model_dump") else message.dict()
+            content = msg_dict.get("content", [])
+            if content and isinstance(content, list):
+                script = content[0].get("text", "").strip()
+        except Exception as e:
+            print(f"⚠️  Dict extraction failed: {e}")
 
-    # Ensure all required fields exist
-    required = ["title", "hook", "narration", "description", "tags", "full_script"]
-    for field in required:
-        if field not in script_data:
-            raise ValueError(f"Missing field in script: {field}")
+    print(f"✅ Raw script length: {len(script)} chars")
+    print(f"✅ Preview: {script[:100]}...")
 
-    return script_data
+    if not script or len(script) < 50:
+        raise ValueError(f"Claude returned empty or short response. Full response: {message}")
+
+    # ── Save to file ─────────────────────────────────────────
+    os.makedirs("output", exist_ok=True)
+
+    result = {
+        "topic":      topic,
+        "script":     script,
+        "word_count": len(script.split()),
+        "timestamp":  datetime.now().isoformat(),
+    }
+
+    with open("output/step2_script.json", "w") as f:
+        json.dump(result, f, indent=2)
+
+    # Also save plain text file for easy debugging
+    with open("output/script.txt", "w") as f:
+        f.write(script)
+
+    print(f"✅ Script saved: {len(script)} chars, {result['word_count']} words")
+    return result
+
+
+# ── Aliases ───────────────────────────────────────────────────
+def create_script(topic, **kwargs):
+    return generate_script(topic, **kwargs)
+
+def write_script(topic, **kwargs):
+    return generate_script(topic, **kwargs)
+
+
+if __name__ == "__main__":
+    result = generate_script("AI tools taking over the internet in 2025")
+    print(f"\n--- SCRIPT PREVIEW ---\n{result['script'][:400]}\n...")
