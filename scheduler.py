@@ -1,6 +1,6 @@
 """
 ViralVortex Scheduler
-Runs pipeline immediately on start, then daily at UPLOAD_TIME
+Always uses venv Python to run pipeline
 """
 
 import os
@@ -10,7 +10,14 @@ import sys
 from datetime import datetime, timedelta
 
 UPLOAD_TIME  = os.environ.get("UPLOAD_TIME", "07:30")
-RUN_ON_START = os.environ.get("RUN_ON_START", "true").lower() == "true"  # DEFAULT TRUE
+RUN_ON_START = os.environ.get("RUN_ON_START", "true").lower() == "true"
+
+# ── Always use venv Python if available ─────────────────────
+VENV_PYTHON = "/app/venv/bin/python"
+PYTHON      = VENV_PYTHON if os.path.exists(VENV_PYTHON) else sys.executable
+
+print(f"🐍 Scheduler Python : {sys.executable}")
+print(f"🐍 Pipeline Python  : {PYTHON}")
 
 
 def get_next_run(time_str):
@@ -25,10 +32,11 @@ def get_next_run(time_str):
 def run_pipeline():
     print("\n" + "=" * 55)
     print(f"🚀 Running pipeline at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🐍 Using Python: {PYTHON}")
     print("=" * 55)
     try:
         result = subprocess.run(
-            [sys.executable, "main.py"],
+            [PYTHON, "main.py"],
             timeout=3600
         )
         if result.returncode == 0:
@@ -46,30 +54,44 @@ def main():
     print("🌀 ViralVortex Scheduler Started")
     print(f"⏰ Daily upload time : {UPLOAD_TIME}")
     print(f"▶️  RUN_ON_START      : {RUN_ON_START}")
-    print(f"🐍 Python            : {sys.executable}")
+    print(f"🐍 Scheduler Python  : {sys.executable}")
+    print(f"🐍 Pipeline Python   : {PYTHON}")
     print("=" * 55)
 
-    # ── Run immediately ──────────────────────────────────────
+    # Verify venv exists and has packages
+    if not os.path.exists(VENV_PYTHON):
+        print(f"❌ Venv not found at {VENV_PYTHON}")
+        print("   Check nixpacks.toml install phase")
+    else:
+        print(f"✅ Venv found at {VENV_PYTHON}")
+        # Quick package check
+        try:
+            check = subprocess.run(
+                [PYTHON, "-c", "import anthropic, gtts, requests; print('✅ Core packages OK')"],
+                capture_output=True, text=True, timeout=10
+            )
+            print(check.stdout.strip() or check.stderr.strip())
+        except Exception as e:
+            print(f"⚠️  Package check failed: {e}")
+
     if RUN_ON_START:
-        print("\n▶️  Starting pipeline now (RUN_ON_START=true)...")
+        print("\n▶️  Starting pipeline now...")
         run_pipeline()
     else:
-        print("\n⏸️  RUN_ON_START=false — waiting for scheduled time")
+        print("\n⏸️  Waiting for scheduled time...")
 
-    # ── Daily loop ───────────────────────────────────────────
     while True:
         next_run = get_next_run(UPLOAD_TIME)
-        wait_seconds = (next_run - datetime.now()).total_seconds()
+        wait_secs = (next_run - datetime.now()).total_seconds()
         print(f"\n⏳ Next run: {next_run.strftime('%Y-%m-%d %H:%M:%S')} "
-              f"(in {wait_seconds/3600:.1f} hours)")
+              f"(in {wait_secs/3600:.1f}h)")
 
         while True:
             remaining = (get_next_run(UPLOAD_TIME) - datetime.now()).total_seconds()
             if remaining <= 0:
                 break
             if int(remaining) % 3600 < 60:
-                print(f"💓 {datetime.now().strftime('%H:%M')} — "
-                      f"{remaining/3600:.1f}h until next run")
+                print(f"💓 {datetime.now().strftime('%H:%M')} — {remaining/3600:.1f}h remaining")
             time.sleep(min(60, remaining))
 
         run_pipeline()
