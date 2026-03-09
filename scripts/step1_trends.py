@@ -1,19 +1,18 @@
 """
 Step 1: Fetch Trending Topics
-- Removed broken YouTube RSS (400 error)
-- Removed broken Google Trends / pytrends (404 error)
-- Uses: YouTube Data API, YouTube scrape, Reddit, NewsAPI, fallback
+Sources: YouTube API, YouTube scrape, BBC RSS, HackerNews, Wikipedia, fallback
+Reddit and Google Trends removed (both blocked)
 """
 
 import os
 import json
 import re
 import requests
+import xml.etree.ElementTree as ET
 from datetime import datetime
 import random
 
-YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
-NEWS_API_KEY    = os.getenv("NEWS_API_KEY", "")
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "").strip()
 
 
 # ────────────────────────────────────────────────────────────
@@ -21,24 +20,17 @@ NEWS_API_KEY    = os.getenv("NEWS_API_KEY", "")
 # ────────────────────────────────────────────────────────────
 def fetch_youtube_api():
     if not YOUTUBE_API_KEY:
-        print("⚠️  No YOUTUBE_API_KEY — skipping YouTube API")
+        print("⚠️  No YOUTUBE_API_KEY — skipping")
         return []
     try:
-        url = "https://www.googleapis.com/youtube/v3/videos"
-        params = {
-            "part": "snippet",
-            "chart": "mostPopular",
-            "regionCode": "US",
-            "maxResults": 20,
-            "key": YOUTUBE_API_KEY,
-        }
-        response = requests.get(url, params=params, timeout=15)
-        response.raise_for_status()
-        topics = [
-            item["snippet"]["title"]
-            for item in response.json().get("items", [])
-            if item.get("snippet", {}).get("title")
-        ]
+        r = requests.get(
+            "https://www.googleapis.com/youtube/v3/videos",
+            params={"part": "snippet", "chart": "mostPopular",
+                    "regionCode": "US", "maxResults": 20, "key": YOUTUBE_API_KEY},
+            timeout=15
+        )
+        r.raise_for_status()
+        topics = [i["snippet"]["title"] for i in r.json().get("items", []) if i.get("snippet", {}).get("title")]
         print(f"✅ YouTube API: {len(topics)} topics")
         return topics
     except Exception as e:
@@ -57,140 +49,126 @@ def fetch_youtube_scrape():
                           "Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9",
         }
-        response = requests.get(
-            "https://www.youtube.com/feed/trending",
-            headers=headers,
-            timeout=20
-        )
-        response.raise_for_status()
-
-        titles = re.findall(
-            r'"title":\{"runs":\[\{"text":"([^"]{10,100})"\}',
-            response.text
-        )
-
+        r = requests.get("https://www.youtube.com/feed/trending", headers=headers, timeout=20)
+        r.raise_for_status()
+        titles = re.findall(r'"title":\{"runs":\[\{"text":"([^"]{10,100})"\}', r.text)
         seen, unique = set(), []
         for t in titles:
             if t.lower() not in seen:
                 seen.add(t.lower())
                 unique.append(t)
-
-        topics = unique[:15]
-        print(f"✅ YouTube Scrape: {len(topics)} topics")
-        return topics
+        print(f"✅ YouTube Scrape: {len(unique[:15])} topics")
+        return unique[:15]
     except Exception as e:
         print(f"⚠️  YouTube Scrape error: {e}")
         return []
 
 
 # ────────────────────────────────────────────────────────────
-# METHOD 3: Reddit r/popular (no API key needed)
+# METHOD 3: BBC News RSS (always works)
 # ────────────────────────────────────────────────────────────
-def fetch_reddit_trending():
-    try:
-        headers = {"User-Agent": "ViralVortex/1.0 trending-bot"}
-        response = requests.get(
-            "https://www.reddit.com/r/popular.json?limit=25",
-            headers=headers,
-            timeout=15
-        )
-        response.raise_for_status()
-        posts = response.json().get("data", {}).get("children", [])
-        topics = [
-            p["data"]["title"]
-            for p in posts
-            if p.get("data", {}).get("title")
-        ][:15]
-        print(f"✅ Reddit: {len(topics)} topics")
-        return topics
-    except Exception as e:
-        print(f"⚠️  Reddit error: {e}")
-        return []
-
-
-# ────────────────────────────────────────────────────────────
-# METHOD 4: NewsAPI top headlines (optional API key)
-# ────────────────────────────────────────────────────────────
-def fetch_news_headlines():
-    if not NEWS_API_KEY:
-        return []
-    try:
-        url = "https://newsapi.org/v2/top-headlines"
-        params = {
-            "country": "us",
-            "pageSize": 20,
-            "apiKey": NEWS_API_KEY,
-        }
-        response = requests.get(url, params=params, timeout=15)
-        response.raise_for_status()
-        articles = response.json().get("articles", [])
-        topics = [a["title"] for a in articles if a.get("title")][:15]
-        print(f"✅ NewsAPI: {len(topics)} topics")
-        return topics
-    except Exception as e:
-        print(f"⚠️  NewsAPI error: {e}")
-        return []
-
-
-# ────────────────────────────────────────────────────────────
-# METHOD 5: Free GNews headlines (no API key needed)
-# ────────────────────────────────────────────────────────────
-def fetch_gnews():
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        response = requests.get(
-            "https://gnews.io/api/v4/top-headlines?lang=en&country=us&max=10&apikey=free",
-            headers=headers,
-            timeout=15
-        )
-        if response.status_code == 200:
-            articles = response.json().get("articles", [])
-            topics = [a["title"] for a in articles if a.get("title")][:10]
-            if topics:
-                print(f"✅ GNews: {len(topics)} topics")
-                return topics
-    except Exception:
-        pass
-
-    # Fallback: BBC RSS (always works)
-    try:
-        response = requests.get(
-            "http://feeds.bbci.co.uk/news/rss.xml",
-            timeout=15
-        )
-        import xml.etree.ElementTree as ET
-        root = ET.fromstring(response.content)
-        titles = [item.findtext("title") for item in root.findall(".//item")]
-        topics = [t for t in titles if t and len(t) > 5][:10]
+def fetch_bbc_rss():
+    feeds = [
+        "http://feeds.bbci.co.uk/news/rss.xml",
+        "http://feeds.bbci.co.uk/news/world/rss.xml",
+        "http://feeds.bbci.co.uk/news/technology/rss.xml",
+    ]
+    topics = []
+    for url in feeds:
+        try:
+            r = requests.get(url, timeout=15)
+            r.raise_for_status()
+            # Clean XML
+            text = r.text
+            text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+            root = ET.fromstring(text.encode('utf-8'))
+            titles = [item.findtext("title") for item in root.findall(".//item")]
+            titles = [t.strip() for t in titles if t and len(t.strip()) > 10]
+            topics.extend(titles[:5])
+        except Exception as e:
+            print(f"⚠️  BBC RSS {url} error: {e}")
+    if topics:
         print(f"✅ BBC RSS: {len(topics)} topics")
+    return topics
+
+
+# ────────────────────────────────────────────────────────────
+# METHOD 4: HackerNews Top Stories (always works, no auth)
+# ────────────────────────────────────────────────────────────
+def fetch_hackernews():
+    try:
+        r = requests.get(
+            "https://hacker-news.firebaseio.com/v0/topstories.json",
+            timeout=10
+        )
+        r.raise_for_status()
+        ids = r.json()[:10]
+        topics = []
+        for story_id in ids:
+            try:
+                story = requests.get(
+                    f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json",
+                    timeout=5
+                ).json()
+                title = story.get("title", "")
+                if title and len(title) > 10:
+                    topics.append(title)
+            except Exception:
+                pass
+        print(f"✅ HackerNews: {len(topics)} topics")
         return topics
     except Exception as e:
-        print(f"⚠️  GNews/BBC error: {e}")
+        print(f"⚠️  HackerNews error: {e}")
         return []
 
 
 # ────────────────────────────────────────────────────────────
-# METHOD 6: Evergreen fallback (always works)
+# METHOD 5: Wikipedia Current Events (always works, no auth)
+# ────────────────────────────────────────────────────────────
+def fetch_wikipedia_trending():
+    try:
+        from datetime import date
+        today = date.today()
+        url = f"https://en.wikipedia.org/w/api.php"
+        params = {
+            "action": "query",
+            "list": "mostviewed",
+            "pvimoffset": 0,
+            "pvimtop": 20,
+            "pvimlimit": 20,
+            "format": "json",
+        }
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        pages = r.json().get("query", {}).get("mostviewed", [])
+        topics = []
+        skip = {"Main_Page", "Special:Search", "-", "Wikipedia", ""}
+        for p in pages:
+            title = p.get("title", "").replace("_", " ").strip()
+            if title and title not in skip and len(title) > 3:
+                topics.append(title)
+        print(f"✅ Wikipedia Trending: {len(topics)} topics")
+        return topics[:10]
+    except Exception as e:
+        print(f"⚠️  Wikipedia error: {e}")
+        return []
+
+
+# ────────────────────────────────────────────────────────────
+# METHOD 6: Evergreen fallback
 # ────────────────────────────────────────────────────────────
 def fetch_fallback_topics():
     topics = [
-        "AI tools that will change everything in 2025",
-        "Things nobody tells you about making money online",
-        "Why everyone is switching to this new technology",
-        "The truth about viral social media trends",
-        "Top 10 things trending on the internet right now",
-        "Secret tricks big companies don't want you to know",
-        "Why this video went viral overnight",
-        "The most searched topics on Google this week",
-        "Hidden features you never knew existed",
-        "Why this trend is taking over the internet",
-        "The biggest story nobody is talking about",
+        "AI tools that are changing everything in 2025",
+        "The biggest news story nobody is talking about",
+        "Top 10 viral moments everyone is watching right now",
+        "Why this trend is taking over social media",
+        "Secret tricks that will blow your mind",
+        "Why millions of people are searching for this right now",
+        "The shocking truth behind the latest viral trend",
         "How to go viral on social media in 2025",
-        "The shocking truth behind this viral trend",
-        "Why millions are watching this right now",
-        "What everyone is searching for this week",
+        "Things nobody tells you about making money online",
+        "The most watched videos on the internet this week",
     ]
     random.shuffle(topics)
     print(f"✅ Fallback: using evergreen topics")
@@ -204,45 +182,45 @@ def get_trending_topics(limit=10, **kwargs):
     print("\n🔍 Fetching trending topics...")
     print("─" * 40)
 
-    api_topics     = fetch_youtube_api()
-    scrape_topics  = fetch_youtube_scrape()
-    reddit_topics  = fetch_reddit_trending()
-    news_topics    = fetch_news_headlines()
-    gnews_topics   = fetch_gnews()
+    api_topics   = fetch_youtube_api()
+    scrape_topics = fetch_youtube_scrape()
+    bbc_topics   = fetch_bbc_rss()
+    hn_topics    = fetch_hackernews()
+    wiki_topics  = fetch_wikipedia_trending()
 
-    all_topics = api_topics + scrape_topics + reddit_topics + news_topics + gnews_topics
+    all_topics = api_topics + scrape_topics + bbc_topics + hn_topics + wiki_topics
 
     if not all_topics:
-        print("⚠️  All sources failed — using fallback topics")
+        print("⚠️  All sources failed — using fallback")
         all_topics = fetch_fallback_topics()
 
     # Deduplicate
-    seen, unique_topics = set(), []
-    for topic in all_topics:
-        key = topic.lower().strip()
-        if key not in seen and len(topic) > 5:
+    seen, unique = set(), []
+    for t in all_topics:
+        key = t.lower().strip()
+        if key not in seen and len(t) > 5:
             seen.add(key)
-            unique_topics.append(topic)
+            unique.append(t)
 
-    unique_topics = unique_topics[:limit]
-    selected = unique_topics[0] if unique_topics else "Top trending topics this week"
+    unique = unique[:limit]
+    selected = unique[0] if unique else "Top trending topics this week"
 
     result = {
         "topic": selected,
-        "all_topics": unique_topics,
+        "all_topics": unique,
         "sources_used": {
             "youtube_api":    len(api_topics),
             "youtube_scrape": len(scrape_topics),
-            "reddit":         len(reddit_topics),
-            "news_api":       len(news_topics),
-            "gnews_bbc":      len(gnews_topics),
+            "bbc_rss":        len(bbc_topics),
+            "hackernews":     len(hn_topics),
+            "wikipedia":      len(wiki_topics),
         },
         "timestamp": datetime.now().isoformat(),
     }
 
     print("─" * 40)
-    print(f"✅ Selected topic: {selected}")
-    print(f"📊 Total unique topics: {len(unique_topics)}")
+    print(f"✅ Selected: {selected}")
+    print(f"📊 Total unique: {len(unique)}")
 
     os.makedirs("output", exist_ok=True)
     with open("output/step1_trends.json", "w") as f:
@@ -251,11 +229,11 @@ def get_trending_topics(limit=10, **kwargs):
     return result
 
 
-# Backward-compatible alias
+# Aliases
 def fetch_trending_topics(limit=10, **kwargs):
     return get_trending_topics(limit=limit)
 
 
 if __name__ == "__main__":
     result = get_trending_topics()
-    print("\n📄 Saved to output/step1_trends.json")
+    print(f"\n📄 Saved to output/step1_trends.json")
