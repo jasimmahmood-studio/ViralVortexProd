@@ -1,7 +1,8 @@
 """
 Step 1: Fetch Trending Topics
 - Removed broken YouTube RSS (400 error)
-- Uses YouTube Data API v3, Google Trends, scraping fallback, evergreen fallback
+- Removed broken Google Trends / pytrends (404 error)
+- Uses: YouTube Data API, YouTube scrape, Reddit, NewsAPI, fallback
 """
 
 import os
@@ -9,19 +10,14 @@ import json
 import re
 import requests
 from datetime import datetime
-
-# Optional imports
-try:
-    from pytrends.request import TrendReq
-    PYTRENDS_AVAILABLE = True
-except ImportError:
-    PYTRENDS_AVAILABLE = False
+import random
 
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
+NEWS_API_KEY    = os.getenv("NEWS_API_KEY", "")
 
 
 # ────────────────────────────────────────────────────────────
-# METHOD 1: YouTube Data API v3 (most reliable)
+# METHOD 1: YouTube Data API v3
 # ────────────────────────────────────────────────────────────
 def fetch_youtube_api():
     if not YOUTUBE_API_KEY:
@@ -51,31 +47,14 @@ def fetch_youtube_api():
 
 
 # ────────────────────────────────────────────────────────────
-# METHOD 2: Google Trends via pytrends
-# ────────────────────────────────────────────────────────────
-def fetch_google_trends():
-    if not PYTRENDS_AVAILABLE:
-        print("⚠️  pytrends not installed — skipping")
-        return []
-    try:
-        pytrends = TrendReq(hl='en-US', tz=360, timeout=(10, 25))
-        df = pytrends.trending_searches(pn='united_states')
-        topics = df[0].tolist()[:15]
-        print(f"✅ Google Trends: {len(topics)} topics")
-        return topics
-    except Exception as e:
-        print(f"⚠️  Google Trends error: {e}")
-        return []
-
-
-# ────────────────────────────────────────────────────────────
-# METHOD 3: YouTube Trending page scrape (no API key needed)
+# METHOD 2: YouTube Trending page scrape
 # ────────────────────────────────────────────────────────────
 def fetch_youtube_scrape():
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9",
         }
         response = requests.get(
@@ -85,10 +64,11 @@ def fetch_youtube_scrape():
         )
         response.raise_for_status()
 
-        # Extract video titles from the page HTML
-        titles = re.findall(r'"title":\{"runs":\[\{"text":"([^"]{10,100})"\}', response.text)
+        titles = re.findall(
+            r'"title":\{"runs":\[\{"text":"([^"]{10,100})"\}',
+            response.text
+        )
 
-        # Deduplicate
         seen, unique = set(), []
         for t in titles:
             if t.lower() not in seen:
@@ -96,10 +76,7 @@ def fetch_youtube_scrape():
                 unique.append(t)
 
         topics = unique[:15]
-        if topics:
-            print(f"✅ YouTube Scrape: {len(topics)} topics")
-        else:
-            print("⚠️  YouTube Scrape: no titles found in page")
+        print(f"✅ YouTube Scrape: {len(topics)} topics")
         return topics
     except Exception as e:
         print(f"⚠️  YouTube Scrape error: {e}")
@@ -107,13 +84,13 @@ def fetch_youtube_scrape():
 
 
 # ────────────────────────────────────────────────────────────
-# METHOD 4: Reddit trending (r/trending, r/popular)
+# METHOD 3: Reddit r/popular (no API key needed)
 # ────────────────────────────────────────────────────────────
 def fetch_reddit_trending():
     try:
         headers = {"User-Agent": "ViralVortex/1.0 trending-bot"}
         response = requests.get(
-            "https://www.reddit.com/r/popular.json?limit=20",
+            "https://www.reddit.com/r/popular.json?limit=25",
             headers=headers,
             timeout=15
         )
@@ -124,7 +101,7 @@ def fetch_reddit_trending():
             for p in posts
             if p.get("data", {}).get("title")
         ][:15]
-        print(f"✅ Reddit Trending: {len(topics)} topics")
+        print(f"✅ Reddit: {len(topics)} topics")
         return topics
     except Exception as e:
         print(f"⚠️  Reddit error: {e}")
@@ -132,10 +109,72 @@ def fetch_reddit_trending():
 
 
 # ────────────────────────────────────────────────────────────
-# METHOD 5: Evergreen fallback (always works)
+# METHOD 4: NewsAPI top headlines (optional API key)
+# ────────────────────────────────────────────────────────────
+def fetch_news_headlines():
+    if not NEWS_API_KEY:
+        return []
+    try:
+        url = "https://newsapi.org/v2/top-headlines"
+        params = {
+            "country": "us",
+            "pageSize": 20,
+            "apiKey": NEWS_API_KEY,
+        }
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        articles = response.json().get("articles", [])
+        topics = [a["title"] for a in articles if a.get("title")][:15]
+        print(f"✅ NewsAPI: {len(topics)} topics")
+        return topics
+    except Exception as e:
+        print(f"⚠️  NewsAPI error: {e}")
+        return []
+
+
+# ────────────────────────────────────────────────────────────
+# METHOD 5: Free GNews headlines (no API key needed)
+# ────────────────────────────────────────────────────────────
+def fetch_gnews():
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        response = requests.get(
+            "https://gnews.io/api/v4/top-headlines?lang=en&country=us&max=10&apikey=free",
+            headers=headers,
+            timeout=15
+        )
+        if response.status_code == 200:
+            articles = response.json().get("articles", [])
+            topics = [a["title"] for a in articles if a.get("title")][:10]
+            if topics:
+                print(f"✅ GNews: {len(topics)} topics")
+                return topics
+    except Exception:
+        pass
+
+    # Fallback: BBC RSS (always works)
+    try:
+        response = requests.get(
+            "http://feeds.bbci.co.uk/news/rss.xml",
+            timeout=15
+        )
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(response.content)
+        titles = [item.findtext("title") for item in root.findall(".//item")]
+        topics = [t for t in titles if t and len(t) > 5][:10]
+        print(f"✅ BBC RSS: {len(topics)} topics")
+        return topics
+    except Exception as e:
+        print(f"⚠️  GNews/BBC error: {e}")
+        return []
+
+
+# ────────────────────────────────────────────────────────────
+# METHOD 6: Evergreen fallback (always works)
 # ────────────────────────────────────────────────────────────
 def fetch_fallback_topics():
-    import random
     topics = [
         "AI tools that will change everything in 2025",
         "Things nobody tells you about making money online",
@@ -147,7 +186,7 @@ def fetch_fallback_topics():
         "The most searched topics on Google this week",
         "Hidden features you never knew existed",
         "Why this trend is taking over the internet",
-        "The biggest news story nobody is talking about",
+        "The biggest story nobody is talking about",
         "How to go viral on social media in 2025",
         "The shocking truth behind this viral trend",
         "Why millions are watching this right now",
@@ -165,13 +204,13 @@ def get_trending_topics(limit=10, **kwargs):
     print("\n🔍 Fetching trending topics...")
     print("─" * 40)
 
-    all_topics    = []
-    api_topics    = fetch_youtube_api()
-    trend_topics  = fetch_google_trends()
-    scrape_topics = fetch_youtube_scrape()
-    reddit_topics = fetch_reddit_trending()
+    api_topics     = fetch_youtube_api()
+    scrape_topics  = fetch_youtube_scrape()
+    reddit_topics  = fetch_reddit_trending()
+    news_topics    = fetch_news_headlines()
+    gnews_topics   = fetch_gnews()
 
-    all_topics = api_topics + trend_topics + scrape_topics + reddit_topics
+    all_topics = api_topics + scrape_topics + reddit_topics + news_topics + gnews_topics
 
     if not all_topics:
         print("⚠️  All sources failed — using fallback topics")
@@ -192,10 +231,11 @@ def get_trending_topics(limit=10, **kwargs):
         "topic": selected,
         "all_topics": unique_topics,
         "sources_used": {
-            "youtube_api":   len(api_topics),
-            "google_trends": len(trend_topics),
+            "youtube_api":    len(api_topics),
             "youtube_scrape": len(scrape_topics),
-            "reddit":        len(reddit_topics),
+            "reddit":         len(reddit_topics),
+            "news_api":       len(news_topics),
+            "gnews_bbc":      len(gnews_topics),
         },
         "timestamp": datetime.now().isoformat(),
     }
