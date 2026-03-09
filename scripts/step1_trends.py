@@ -198,7 +198,7 @@ def fetch_fallback_topics():
 # ────────────────────────────────────────────────────────────
 # MAIN: Run all methods, combine results
 # ────────────────────────────────────────────────────────────
-def get_trending_topics():
+def fetch_trending_topics():
     """Get trending topics from all available sources."""
     print("\n🔍 Fetching trending topics...")
     print("─" * 40)
@@ -256,5 +256,5 @@ def get_trending_topics():
 
 
 if __name__ == "__main__":
-    result = get_trending_topics()
+    result = fetch_trending_topics()
     print("\n📄 Result saved to output/step1_trends.json")
