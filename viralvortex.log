@@ -1,0 +1,7 @@
+2026-03-09 16:05:48,717 [INFO] 🌀 ViralVortex pipeline started — run_id=20260309_160548
+2026-03-09 16:05:48,717 [INFO] 🔥 STEP 1: Fetching trending topics...
+2026-03-09 16:05:51,798 [ERROR] ❌ Pipeline failed at step: list index out of range
+Traceback (most recent call last):
+  File "/Users/jasimmahmood/Documents/Jasim Mahmood/Projects/viralvortex/main.py", line 49, in run_pipeline
+    best_topic = topics[0]
+IndexError: list index out of range
