@@ -1,130 +1,228 @@
 """
-STEP 6: Upload Video to YouTube using YouTube Data API v3
-Requires OAuth2 credentials (one-time browser auth)
+Step 6: Upload Video to YouTube
+- Uses OAuth2 token (YOUTUBE_TOKEN_B64 env var)
+- Full error logging to diagnose issues
 """
 
 import os
 import json
-import time
+import base64
 import pickle
-from pathlib import Path
-
-import google_auth_oauthlib.flow
-import googleapiclient.discovery
-import googleapiclient.errors
-from googleapiclient.http import MediaFileUpload
-from google.auth.transport.requests import Request
+import tempfile
+from datetime import datetime
 
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload",
-          "https://www.googleapis.com/auth/youtube"]
+def upload_video(video_path, title, description, thumbnail_path=None, **kwargs):
+    print(f"\n🚀 Uploading to YouTube...")
+    print(f"   Video     : {video_path}")
+    print(f"   Title     : {title}")
+    print(f"   Thumbnail : {thumbnail_path}")
 
-TOKEN_FILE = "youtube_token.pickle"
-CREDENTIALS_FILE = "youtube_credentials.json"
+    # ── Check video file ─────────────────────────────────────
+    if not video_path or not os.path.exists(video_path):
+        raise ValueError(f"Video file not found: {video_path}")
 
+    size = os.path.getsize(video_path)
+    print(f"   File size : {size:,} bytes ({size/1024/1024:.1f} MB)")
 
-def get_youtube_client():
-    """Authenticate and return YouTube API client"""
-    creds = None
+    if size < 1000:
+        raise ValueError(f"Video file too small ({size} bytes) — probably corrupted")
 
-    # Load saved token
-    if Path(TOKEN_FILE).exists():
-        with open(TOKEN_FILE, "rb") as f:
-            creds = pickle.load(f)
+    # ── Load OAuth token ─────────────────────────────────────
+    creds = _load_credentials()
+    if not creds:
+        raise ValueError(
+            "No YouTube OAuth token found.\n"
+            "Set YOUTUBE_TOKEN_B64 in Railway Variables.\n"
+            "Generate it locally with: python step6_upload.py --auth"
+        )
 
-    # Refresh or re-authenticate
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            if not Path(CREDENTIALS_FILE).exists():
-                raise FileNotFoundError(
-                    f"Missing {CREDENTIALS_FILE}. Download from Google Cloud Console:\n"
-                    "https://console.cloud.google.com/apis/credentials"
-                )
-            flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(
-                CREDENTIALS_FILE, SCOPES
-            )
-            creds = flow.run_local_server(port=0)
+    # ── Build YouTube client ─────────────────────────────────
+    try:
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaFileUpload
+        import google.auth.transport.requests
 
-        # Save token for next run
-        with open(TOKEN_FILE, "wb") as f:
-            pickle.dump(creds, f)
+        # Refresh token if expired
+        if creds.expired and creds.refresh_token:
+            print("🔄 Refreshing OAuth token...")
+            creds.refresh(google.auth.transport.requests.Request())
+            _save_credentials(creds)
 
-    return googleapiclient.discovery.build("youtube", "v3", credentials=creds)
+        youtube = build("youtube", "v3", credentials=creds)
+        print("✅ YouTube client built")
 
+    except ImportError as e:
+        raise ImportError(f"Missing Google API packages: {e}\nRun: pip install google-api-python-client google-auth-oauthlib")
+    except Exception as e:
+        raise RuntimeError(f"Failed to build YouTube client: {e}")
 
-def upload_to_youtube(
-    video_path: str,
-    thumbnail_path: str,
-    title: str,
-    description: str,
-    tags: list,
-    category_id: str = "25",       # 25 = News & Politics, 22 = People & Blogs
-    privacy: str = "public"        # public | unlisted | private
-) -> str:
-    """Upload video and thumbnail, return video_id"""
+    # ── Upload video ─────────────────────────────────────────
+    try:
+        print("📤 Starting upload...")
 
-    youtube = get_youtube_client()
-
-    # Truncate title to YouTube's 100 char limit
-    title = title[:100]
-
-    body = {
-        "snippet": {
-            "title": title,
-            "description": description,
-            "tags": tags[:15],  # YouTube max 15 tags
-            "categoryId": category_id,
-            "defaultLanguage": "en",
-        },
-        "status": {
-            "privacyStatus": privacy,
-            "selfDeclaredMadeForKids": False,
+        body = {
+            "snippet": {
+                "title":       title[:100],
+                "description": description[:5000],
+                "tags":        ["ViralVortex", "Trending", "Viral", "News"],
+                "categoryId":  "25",  # News & Politics
+            },
+            "status": {
+                "privacyStatus":           "public",
+                "selfDeclaredMadeForKids": False,
+            },
         }
-    }
 
-    media = MediaFileUpload(
-        video_path,
-        mimetype="video/mp4",
-        chunksize=50 * 1024 * 1024,  # 50MB chunks
-        resumable=True
-    )
+        media = MediaFileUpload(
+            video_path,
+            mimetype="video/mp4",
+            resumable=True,
+            chunksize=1024*1024*5  # 5MB chunks
+        )
 
-    print(f"   Uploading: {title}")
-    request = youtube.videos().insert(
-        part=",".join(body.keys()),
-        body=body,
-        media_body=media
-    )
+        request = youtube.videos().insert(
+            part="snippet,status",
+            body=body,
+            media_body=media,
+        )
 
-    # Resumable upload with progress
-    response = None
-    retry = 0
-    while response is None:
-        try:
+        response = None
+        last_progress = 0
+        while response is None:
             status, response = request.next_chunk()
             if status:
-                pct = int(status.progress() * 100)
-                print(f"   Upload progress: {pct}%")
-        except googleapiclient.errors.HttpError as e:
-            if e.resp.status in [500, 502, 503, 504] and retry < 5:
-                retry += 1
-                wait = 2 ** retry
-                print(f"   Retrying in {wait}s...")
-                time.sleep(wait)
-            else:
-                raise
+                progress = int(status.progress() * 100)
+                if progress >= last_progress + 10:
+                    print(f"   Upload progress: {progress}%")
+                    last_progress = progress
 
-    video_id = response["id"]
-    print(f"   Video uploaded: https://youtube.com/watch?v={video_id}")
+        video_id = response.get("id", "")
+        print(f"✅ Uploaded! Video ID: {video_id}")
+        print(f"🔗 URL: https://www.youtube.com/watch?v={video_id}")
 
-    # Set thumbnail
-    if Path(thumbnail_path).exists():
-        youtube.thumbnails().set(
-            videoId=video_id,
-            media_body=MediaFileUpload(thumbnail_path)
-        ).execute()
-        print(f"   Thumbnail set ✅")
+    except Exception as e:
+        raise RuntimeError(f"Video upload failed: {e}")
 
-    return video_id
+    # ── Upload thumbnail ─────────────────────────────────────
+    if thumbnail_path and os.path.exists(thumbnail_path) and video_id:
+        try:
+            youtube.thumbnails().set(
+                videoId=video_id,
+                media_body=MediaFileUpload(thumbnail_path, mimetype="image/jpeg")
+            ).execute()
+            print(f"✅ Thumbnail uploaded")
+        except Exception as e:
+            print(f"⚠️  Thumbnail upload failed (non-fatal): {e}")
+
+    result = {
+        "video_id":  video_id,
+        "url":       f"https://www.youtube.com/watch?v={video_id}",
+        "title":     title,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+    os.makedirs("output", exist_ok=True)
+    with open("output/step6_upload.json", "w") as f:
+        json.dump(result, f, indent=2)
+
+    return result
+
+
+def _load_credentials():
+    """Load OAuth credentials from env var or local file."""
+    # Try env var first (Railway)
+    token_b64 = os.environ.get("YOUTUBE_TOKEN_B64", "").strip()
+    if token_b64:
+        try:
+            token_bytes = base64.b64decode(token_b64)
+            creds = pickle.loads(token_bytes)
+            print("✅ OAuth token loaded from YOUTUBE_TOKEN_B64")
+            return creds
+        except Exception as e:
+            print(f"⚠️  Failed to decode YOUTUBE_TOKEN_B64: {e}")
+            print(f"   Token preview: {token_b64[:30]}...")
+
+    # Try local pickle file
+    local_paths = ["youtube_token.pickle", "token.pickle", "credentials.pickle"]
+    for path in local_paths:
+        if os.path.exists(path):
+            try:
+                with open(path, "rb") as f:
+                    creds = pickle.load(f)
+                print(f"✅ OAuth token loaded from {path}")
+                return creds
+            except Exception as e:
+                print(f"⚠️  Failed to load {path}: {e}")
+
+    print("❌ No OAuth token found")
+    print("   Set YOUTUBE_TOKEN_B64 in Railway Variables")
+    return None
+
+
+def _save_credentials(creds):
+    """Save refreshed credentials back to env-compatible format."""
+    try:
+        token_bytes = pickle.dumps(creds)
+        token_b64 = base64.b64encode(token_bytes).decode()
+        # Save locally for reference
+        with open("output/token_refreshed.txt", "w") as f:
+            f.write(token_b64)
+        print("✅ Refreshed token saved to output/token_refreshed.txt")
+        print("   Update YOUTUBE_TOKEN_B64 in Railway with this new value")
+    except Exception as e:
+        print(f"⚠️  Could not save refreshed token: {e}")
+
+
+def _run_auth_flow():
+    """Run OAuth flow locally to generate token. Run with: python step6_upload.py --auth"""
+    print("\n🔑 Running YouTube OAuth flow...")
+    try:
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        SCOPES = [
+            "https://www.googleapis.com/auth/youtube.upload",
+            "https://www.googleapis.com/auth/youtube",
+        ]
+        secrets_files = ["client_secrets.json", "client_secret.json", "credentials.json"]
+        secrets_file  = next((f for f in secrets_files if os.path.exists(f)), None)
+
+        if not secrets_file:
+            print("❌ client_secrets.json not found!")
+            print("   Download it from Google Cloud Console → Credentials → OAuth Client → Download JSON")
+            return
+
+        flow  = InstalledAppFlow.from_client_secrets_file(secrets_file, SCOPES)
+        creds = flow.run_local_server(port=0)
+
+        # Save pickle
+        with open("youtube_token.pickle", "wb") as f:
+            pickle.dump(creds, f)
+        print("✅ Token saved to youtube_token.pickle")
+
+        # Print base64 for Railway
+        token_b64 = base64.b64encode(pickle.dumps(creds)).decode()
+        print("\n" + "=" * 60)
+        print("Copy this value to Railway as YOUTUBE_TOKEN_B64:")
+        print("=" * 60)
+        print(token_b64)
+        print("=" * 60)
+
+    except Exception as e:
+        print(f"❌ Auth flow failed: {e}")
+
+
+# Aliases
+def upload(video_path, title, description, thumbnail_path=None, **kwargs):
+    return upload_video(video_path, title, description, thumbnail_path, **kwargs)
+
+def youtube_upload(video_path, title, description, thumbnail_path=None, **kwargs):
+    return upload_video(video_path, title, description, thumbnail_path, **kwargs)
+
+
+if __name__ == "__main__":
+    import sys
+    if "--auth" in sys.argv:
+        _run_auth_flow()
+    else:
+        print("Run with --auth to generate OAuth token")
+        print("Example: python step6_upload.py --auth")
