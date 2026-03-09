@@ -1,11 +1,11 @@
 [phases.setup]
-nixPkgs = ["python311", "ffmpeg-full", "gcc"]
+nixPkgs = ["python311", "python311Packages.pip", "ffmpeg-full", "gcc"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = ["python3 -m pip install --upgrade pip", "python3 -m pip install -r requirements.txt"]
 
 [phases.build]
-cmds = ["python -c \"import shutil; print('ffmpeg:', shutil.which('ffmpeg')); print('ffprobe:', shutil.which('ffprobe'))\""]
+cmds = ["python3 -c \"import shutil; print('ffmpeg:', shutil.which('ffmpeg')); print('ffprobe:', shutil.which('ffprobe'))\""]
 
 [start]
-cmd = "python scheduler.py"
+cmd = "python3 scheduler.py"
