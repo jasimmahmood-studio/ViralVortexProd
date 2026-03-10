@@ -176,10 +176,23 @@ for video_num, topic in enumerate(topics_to_use, 1):
         if not script or len(script) < 50:
             raise ValueError(f"Script too short: {len(script) if script else 0} chars")
         print(f"📝 Script: {len(script)} chars")
-        return script
+        # Return full dict so we can pass sections to step4
+        if isinstance(result, dict):
+            result["script"] = script
+            return result
+        return {"script": script, "sections": [], "title": topic}
 
-    state["script"] = run_step(2, f"Generate Script [{video_num}]", step2)
-    if not state["script"]:
+    step2_result = run_step(2, f"Generate Script [{video_num}]", step2)
+    if isinstance(step2_result, dict):
+        state["script"]      = step2_result.get("script", "")
+        state["script_data"] = step2_result
+        state["title"]       = step2_result.get("title", topic)
+    else:
+        state["script"] = step2_result or ""
+        state["script_data"] = None
+        state["title"] = topic
+
+    if not state["script"] or len(state["script"]) < 50:
         state["script"] = (
             f"Welcome to ViralVortex! Today we are covering: {topic}. "
             "This is one of the hottest topics right now. "
@@ -219,6 +232,7 @@ for video_num, topic in enumerate(topics_to_use, 1):
         result = create_video(
             topic=topic,
             script=state["script"],
+            script_data=state.get("script_data"),
             audio_path=state["audio_path"],
             output_path=video_out,
         )
@@ -259,7 +273,7 @@ for video_num, topic in enumerate(topics_to_use, 1):
         from scripts.step6_upload import upload_video
         result = upload_video(
             video_path=state["video_path"],
-            title=topic[:100],
+            title=state.get("title", topic)[:100],
             description=(
                 f"Today on ViralVortex: {topic}\n\n"
                 "Subscribe for daily trending videos!\n\n"
