@@ -334,3 +334,15 @@ if __name__ == "__main__":
         audio_path="output/audio.mp3"
     )
     print(f"\n✅ Done: {result}")
+
+# NOTE: output_path support — patch create_video to accept it
+_original_create_video = create_video
+def create_video(topic, script, audio_path, output_path=None, **kwargs):
+    import shutil
+    result = _original_create_video(topic, script, audio_path, **kwargs)
+    if output_path and isinstance(result, dict):
+        src = result.get("video_path")
+        if src and os.path.exists(src) and src != output_path:
+            shutil.copy(src, output_path)
+            result["video_path"] = output_path
+    return result

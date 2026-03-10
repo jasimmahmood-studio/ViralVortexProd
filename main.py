@@ -1,6 +1,6 @@
 """
 ViralVortex — Main Pipeline Orchestrator
-Full error logging on every step
+Uploads 10 videos per run, each with unique trending topic
 """
 
 import os
@@ -13,24 +13,16 @@ print("=" * 55)
 print("🌀 ViralVortex Pipeline Starting...")
 print(f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"📁 CWD: {os.getcwd()}")
-print(f"🐍 Python: {sys.version.split()[0]}")
 print("=" * 55)
 
 os.makedirs("output", exist_ok=True)
 
-state = {
-    "topic":          None,
-    "script":         None,
-    "audio_path":     None,
-    "video_path":     None,
-    "thumbnail_path": None,
-    "upload_result":  None,
-}
+VIDEOS_PER_RUN = int(os.environ.get("VIDEOS_PER_RUN", "10"))
+print(f"🎬 Videos to produce: {VIDEOS_PER_RUN}")
 
 
 def extract_text(result, keys=("script", "text", "content", "body")):
-    if result is None:
-        return None
+    if result is None: return None
     if isinstance(result, str) and len(result.strip()) > 10:
         return result.strip()
     if isinstance(result, dict):
@@ -42,215 +34,274 @@ def extract_text(result, keys=("script", "text", "content", "body")):
 
 
 def extract_topic(result):
-    if result is None:
-        return None
-    if isinstance(result, str) and result.strip():
-        return result.strip()
+    if result is None: return None
+    if isinstance(result, str) and result.strip(): return result.strip()
     if isinstance(result, dict):
         for key in ("topic", "title", "trend", "query"):
             val = result.get(key)
-            if val and isinstance(val, str):
-                return val.strip()
+            if val and isinstance(val, str): return val.strip()
         topics = result.get("all_topics", [])
-        if topics and isinstance(topics, list):
-            return str(topics[0])
-    if isinstance(result, list) and result:
-        return str(result[0])
+        if topics and isinstance(topics, list): return str(topics[0])
+    if isinstance(result, list) and result: return str(result[0])
     return None
 
 
-def extract_path(result, keys=("audio_path", "video_path", "thumbnail_path", "path", "file")):
-    if result is None:
-        return None
-    if isinstance(result, str) and os.path.exists(result):
-        return result
+def extract_all_topics(result):
+    """Extract full list of trending topics."""
+    if isinstance(result, dict):
+        topics = result.get("all_topics", [])
+        if topics and isinstance(topics, list):
+            return [str(t) for t in topics if t]
+    return []
+
+
+def extract_path(result, keys=("audio_path","video_path","thumbnail_path","path","file")):
+    if result is None: return None
+    if isinstance(result, str) and os.path.exists(result): return result
     if isinstance(result, dict):
         for key in keys:
             val = result.get(key)
-            if val and isinstance(val, str) and os.path.exists(val):
-                return val
+            if val and isinstance(val, str) and os.path.exists(val): return val
     return None
 
 
 def run_step(number, name, func):
-    print(f"\n{'─' * 55}")
-    print(f"▶️  STEP {number}: {name}")
-    print(f"{'─' * 55}")
+    print(f"\n{'─'*55}")
+    print(f"▶️  Step {number}: {name}")
+    print(f"{'─'*55}")
     try:
         result = func()
-        print(f"✅ STEP {number} COMPLETE: {name}")
+        print(f"✅ Step {number} complete: {name}")
         return result
     except Exception as e:
-        print(f"\n{'!' * 55}")
-        print(f"❌ STEP {number} FAILED: {name}")
+        print(f"\n{'!'*55}")
+        print(f"❌ Step {number} FAILED: {name}")
         print(f"   Error type : {type(e).__name__}")
-        print(f"   Error msg  : {str(e)}")
-        print(f"   Full trace :")
+        print(f"   Error msg  : {e}")
         traceback.print_exc()
-        print(f"{'!' * 55}")
+        print(f"{'!'*55}")
         return None
 
 
 # ════════════════════════════════════════════════════════════
-# STEP 1 — Trending Topics
+# STEP 1 — Fetch ALL trending topics at once
 # ════════════════════════════════════════════════════════════
-def step1():
-    print("📦 Importing step1_trends...")
+print(f"\n{'═'*55}")
+print("▶️  STEP 1: Fetch Trending Topics")
+print(f"{'═'*55}")
+
+try:
     from scripts.step1_trends import fetch_trending_topics
-    print("✅ Import OK")
-    result = fetch_trending_topics(limit=10)
-    print(f"📦 Raw result type: {type(result)}")
-    print(f"📦 Raw result preview: {str(result)[:200]}")
-    topic = extract_topic(result)
-    if not topic:
-        raise ValueError(f"Could not extract topic. Got: {type(result)} = {str(result)[:200]}")
-    print(f"📌 Topic: {topic}")
-    return topic
+    trends_result = fetch_trending_topics(limit=VIDEOS_PER_RUN + 5)
+    all_topics = extract_all_topics(trends_result)
 
-state["topic"] = run_step(1, "Fetch Trending Topics", step1)
-if not state["topic"]:
-    state["topic"] = "Top trending topics everyone is talking about right now"
-    print(f"⚠️  Using fallback topic: {state['topic']}")
+    if not all_topics:
+        # fallback
+        topic = extract_topic(trends_result)
+        all_topics = [topic] if topic else []
+
+    print(f"✅ Got {len(all_topics)} topics")
+    for i, t in enumerate(all_topics):
+        print(f"   {i+1}. {t}")
+
+except Exception as e:
+    print(f"❌ Step 1 failed: {e}")
+    traceback.print_exc()
+    all_topics = []
+
+# Ensure we have enough topics
+fallback_topics = [
+    "AI tools taking over the internet in 2025",
+    "The most viral trend nobody is talking about",
+    "Top 10 shocking news stories this week",
+    "Why everyone is obsessed with this right now",
+    "Secret tricks that will blow your mind today",
+    "The biggest viral moment on the internet this week",
+    "Why this video is breaking the internet right now",
+    "Unbelievable things happening in the world today",
+    "The truth behind the latest social media trend",
+    "What everyone is searching for on Google right now",
+    "Most shocking celebrity news this week",
+    "Why millions are watching this viral video",
+]
+
+while len(all_topics) < VIDEOS_PER_RUN:
+    for ft in fallback_topics:
+        if ft not in all_topics:
+            all_topics.append(ft)
+        if len(all_topics) >= VIDEOS_PER_RUN:
+            break
+
+# Use only what we need, ensure all unique
+seen_topics = set()
+unique_topics = []
+for t in all_topics:
+    if t.lower() not in seen_topics:
+        seen_topics.add(t.lower())
+        unique_topics.append(t)
+
+topics_to_use = unique_topics[:VIDEOS_PER_RUN]
+print(f"\n🎯 Will produce {len(topics_to_use)} videos")
 
 
 # ════════════════════════════════════════════════════════════
-# STEP 2 — Generate Script
+# LOOP — Produce one video per topic
 # ════════════════════════════════════════════════════════════
-def step2():
-    print("📦 Importing step2_script...")
-    from scripts.step2_script import generate_script
-    print("✅ Import OK")
-    result = generate_script(state["topic"])
-    print(f"📦 Raw result type: {type(result)}")
-    print(f"📦 Raw result preview: {str(result)[:200]}")
-    script = extract_text(result, keys=("script", "text", "content", "body"))
-    if not script or len(script) < 50:
-        raise ValueError(
-            f"Script too short or missing.\n"
-            f"  Result type: {type(result)}\n"
-            f"  Result keys: {list(result.keys()) if isinstance(result, dict) else 'N/A'}\n"
-            f"  Preview: {str(result)[:300]}"
+results_summary = []
+
+for video_num, topic in enumerate(topics_to_use, 1):
+    print(f"\n{'█'*55}")
+    print(f"🎬 VIDEO {video_num}/{len(topics_to_use)}: {topic}")
+    print(f"{'█'*55}")
+
+    # Use unique output paths per video
+    prefix = f"output/v{video_num:02d}"
+    os.makedirs("output", exist_ok=True)
+
+    state = {
+        "topic":          topic,
+        "script":         None,
+        "audio_path":     None,
+        "video_path":     None,
+        "thumbnail_path": None,
+        "upload_result":  None,
+        "video_num":      video_num,
+    }
+
+    # ── Step 2: Script ───────────────────────────────────────
+    def step2():
+        from scripts.step2_script import generate_script
+        result = generate_script(topic)
+        script = extract_text(result, keys=("script","text","content","body"))
+        if not script or len(script) < 50:
+            raise ValueError(f"Script too short: {len(script) if script else 0} chars")
+        print(f"📝 Script: {len(script)} chars")
+        return script
+
+    state["script"] = run_step(2, f"Generate Script [{video_num}]", step2)
+    if not state["script"]:
+        state["script"] = (
+            f"Welcome to ViralVortex! Today we are covering: {topic}. "
+            "This is one of the hottest topics right now. "
+            "Stay tuned as we break it all down. "
+            "Like and subscribe to ViralVortex for daily trending content!"
         )
-    print(f"📝 Script OK: {len(script)} chars, {len(script.split())} words")
-    return script
 
-state["script"] = run_step(2, "Generate Script", step2)
-if not state["script"]:
-    state["script"] = (
-        f"Welcome to ViralVortex! Today we are covering: {state['topic']}. "
-        "This is one of the most talked about topics right now and you won't believe what is happening. "
-        "Stay with us as we break it all down. Don't forget to like and subscribe to ViralVortex "
-        "so you never miss a trending story. Hit that notification bell right now!"
-    )
-    print(f"⚠️  Using fallback script ({len(state['script'])} chars)")
+    # ── Step 3: Voice ────────────────────────────────────────
+    def step3():
+        from scripts.step3_voice import generate_voice
+        audio_out = f"{prefix}_audio.mp3"
+        result = generate_voice(state["script"], output_path=audio_out)
+        # Also try without output_path if it fails
+        if not result:
+            result = generate_voice(state["script"])
+        path = extract_path(result, keys=("audio_path","path","file","output"))
+        if not path:
+            raise ValueError(f"No audio path returned: {result}")
+        # Move to unique path if needed
+        if path != audio_out and os.path.exists(path):
+            import shutil
+            shutil.copy(path, audio_out)
+            path = audio_out
+        return path
 
+    state["audio_path"] = run_step(3, f"Generate Voice [{video_num}]", step3)
 
-# ════════════════════════════════════════════════════════════
-# STEP 3 — Generate Voice
-# ════════════════════════════════════════════════════════════
-def step3():
-    print("📦 Importing step3_voice...")
-    from scripts.step3_voice import generate_voice
-    print("✅ Import OK")
-    script_text = state["script"]
-    if not isinstance(script_text, str) or len(script_text) < 10:
-        raise ValueError(f"Script is not valid string: type={type(script_text)}, len={len(str(script_text))}")
-    print(f"🎙️  Sending {len(script_text)} chars to voice engine")
-    result = generate_voice(script_text)
-    print(f"📦 Raw result type: {type(result)}")
-    print(f"📦 Raw result preview: {str(result)[:200]}")
-    path = extract_path(result, keys=("audio_path", "path", "file", "output"))
-    if not path:
-        raise ValueError(f"No valid audio path in result: {result}")
-    print(f"🎙️  Audio: {path} ({os.path.getsize(path):,} bytes)")
-    return path
-
-state["audio_path"] = run_step(3, "Generate Voice Audio", step3)
-
-
-# ════════════════════════════════════════════════════════════
-# STEP 4 — Create Video
-# ════════════════════════════════════════════════════════════
-def step4():
     if not state["audio_path"]:
-        raise ValueError("No audio_path in state — Step 3 must have failed")
-    print("📦 Importing step4_video...")
-    from scripts.step4_video import create_video
-    print("✅ Import OK")
-    result = create_video(
-        topic=state["topic"],
-        script=state["script"],
-        audio_path=state["audio_path"],
-    )
-    print(f"📦 Raw result type: {type(result)}")
-    print(f"📦 Raw result preview: {str(result)[:200]}")
-    path = extract_path(result, keys=("video_path", "path", "file", "output"))
-    if not path:
-        raise ValueError(f"No valid video path in result: {result}")
-    print(f"🎬 Video: {path} ({os.path.getsize(path):,} bytes)")
-    return path
+        print(f"⚠️  Skipping video {video_num} — no audio")
+        results_summary.append({"video_num": video_num, "topic": topic, "status": "failed_audio"})
+        continue
 
-state["video_path"] = run_step(4, "Create Video", step4)
+    # ── Step 4: Video ────────────────────────────────────────
+    def step4():
+        from scripts.step4_video import create_video
+        video_out = f"{prefix}_video.mp4"
+        result = create_video(
+            topic=topic,
+            script=state["script"],
+            audio_path=state["audio_path"],
+            output_path=video_out,
+        )
+        path = extract_path(result, keys=("video_path","path","file","output"))
+        if not path:
+            raise ValueError(f"No video path returned: {result}")
+        if path != video_out and os.path.exists(path):
+            import shutil
+            shutil.copy(path, video_out)
+            path = video_out
+        return path
 
+    state["video_path"] = run_step(4, f"Create Video [{video_num}]", step4)
 
-# ════════════════════════════════════════════════════════════
-# STEP 5 — Create Thumbnail
-# ════════════════════════════════════════════════════════════
-def step5():
-    print("📦 Importing step5_thumbnail...")
-    from scripts.step5_thumbnail import create_thumbnail
-    print("✅ Import OK")
-    result = create_thumbnail(state["topic"])
-    print(f"📦 Raw result type: {type(result)}")
-    print(f"📦 Raw result preview: {str(result)[:200]}")
-    path = extract_path(result, keys=("thumbnail_path", "path", "file", "output"))
-    if not path:
-        raise ValueError(f"No valid thumbnail path in result: {result}")
-    print(f"🖼️  Thumbnail: {path}")
-    return path
-
-state["thumbnail_path"] = run_step(5, "Create Thumbnail", step5)
-
-
-# ════════════════════════════════════════════════════════════
-# STEP 6 — Upload to YouTube
-# ════════════════════════════════════════════════════════════
-def step6():
     if not state["video_path"]:
-        raise ValueError("No video_path in state — Step 4 must have failed")
-    print("📦 Importing step6_upload...")
-    from scripts.step6_upload import upload_video
-    print("✅ Import OK")
-    result = upload_video(
-        video_path=state["video_path"],
-        title=state["topic"],
-        description=(
-            f"Today on ViralVortex: {state['topic']}\n\n"
-            "Subscribe for daily trending videos!\n\n"
-            "#ViralVortex #Trending #Viral"
-        ),
-        thumbnail_path=state["thumbnail_path"],
-    )
-    if not result:
-        raise ValueError("Upload returned no result")
-    video_id = result.get("video_id") if isinstance(result, dict) else str(result)
-    print(f"🚀 Uploaded! https://www.youtube.com/watch?v={video_id}")
-    return result
+        print(f"⚠️  Skipping video {video_num} — no video")
+        results_summary.append({"video_num": video_num, "topic": topic, "status": "failed_video"})
+        continue
 
-state["upload_result"] = run_step(6, "Upload to YouTube", step6)
+    # ── Step 5: Thumbnail ────────────────────────────────────
+    def step5():
+        from scripts.step5_thumbnail import create_thumbnail
+        thumb_out = f"{prefix}_thumb.jpg"
+        result = create_thumbnail(topic, output_path=thumb_out)
+        path = extract_path(result, keys=("thumbnail_path","path","file","output"))
+        if not path:
+            raise ValueError(f"No thumbnail path: {result}")
+        if path != thumb_out and os.path.exists(path):
+            import shutil
+            shutil.copy(path, thumb_out)
+            path = thumb_out
+        return path
+
+    state["thumbnail_path"] = run_step(5, f"Create Thumbnail [{video_num}]", step5)
+
+    # ── Step 6: Upload ───────────────────────────────────────
+    def step6():
+        from scripts.step6_upload import upload_video
+        result = upload_video(
+            video_path=state["video_path"],
+            title=topic[:100],
+            description=(
+                f"Today on ViralVortex: {topic}\n\n"
+                "Subscribe for daily trending videos!\n\n"
+                "#ViralVortex #Trending #Viral"
+            ),
+            thumbnail_path=state["thumbnail_path"],
+        )
+        if not result:
+            raise ValueError("Upload returned no result")
+        video_id = result.get("video_id") if isinstance(result, dict) else str(result)
+        print(f"🚀 https://www.youtube.com/watch?v={video_id}")
+        return result
+
+    state["upload_result"] = run_step(6, f"Upload to YouTube [{video_num}]", step6)
+
+    # ── Summary for this video ───────────────────────────────
+    status = "success" if state["upload_result"] else "uploaded_failed"
+    video_id = None
+    if isinstance(state["upload_result"], dict):
+        video_id = state["upload_result"].get("video_id")
+
+    results_summary.append({
+        "video_num":  video_num,
+        "topic":      topic,
+        "status":     status,
+        "video_id":   video_id,
+        "url":        f"https://www.youtube.com/watch?v={video_id}" if video_id else None,
+    })
+
+    print(f"\n✅ Video {video_num} done: {status}")
 
 
 # ════════════════════════════════════════════════════════════
-# STEP 7 — Send Report
+# STEP 7 — Final Report
 # ════════════════════════════════════════════════════════════
 def step7():
-    print("📦 Importing step7_report...")
     from scripts.step7_report import send_report
-    print("✅ Import OK")
+    successful = [r for r in results_summary if r["status"] == "success"]
     send_report(
-        topic=state["topic"],
-        upload_result=state["upload_result"],
-        state=state,
+        topic=f"{len(successful)}/{len(topics_to_use)} videos uploaded",
+        upload_result={"videos": results_summary},
+        state={"results": results_summary},
     )
 
 run_step(7, "Send Report", step7)
@@ -260,22 +311,22 @@ run_step(7, "Send Report", step7)
 # FINAL SUMMARY
 # ════════════════════════════════════════════════════════════
 print("\n" + "=" * 55)
-print("📊 PIPELINE SUMMARY")
+print("📊 FINAL PIPELINE SUMMARY")
 print("=" * 55)
-print(f"  Topic      : {state['topic']}")
-print(f"  Script     : {'✅' if state['script'] else '❌'}")
-print(f"  Audio      : {'✅  ' + str(state['audio_path']) if state['audio_path'] else '❌ failed'}")
-print(f"  Video      : {'✅  ' + str(state['video_path']) if state['video_path'] else '❌ failed'}")
-print(f"  Thumbnail  : {'✅  ' + str(state['thumbnail_path']) if state['thumbnail_path'] else '❌ failed'}")
-print(f"  Uploaded   : {'✅' if state['upload_result'] else '❌ failed'}")
+successful = [r for r in results_summary if r["status"] == "success"]
+failed     = [r for r in results_summary if r["status"] != "success"]
 
-with open("output/pipeline_state.json", "w") as f:
-    json.dump({k: str(v) if v else None for k, v in state.items()}, f, indent=2)
+print(f"  ✅ Successful uploads : {len(successful)}/{len(topics_to_use)}")
+print(f"  ❌ Failed             : {len(failed)}")
+print()
+for r in results_summary:
+    icon = "✅" if r["status"] == "success" else "❌"
+    print(f"  {icon} [{r['video_num']:02d}] {r['topic'][:50]}")
+    if r.get("url"):
+        print(f"        {r['url']}")
 
-if state["upload_result"]:
-    print("\n🎉 Pipeline completed successfully!")
-elif state["video_path"]:
-    print("\n⚠️  Video created but upload failed — check YouTube credentials")
-else:
-    print("\n⚠️  Pipeline incomplete — check errors above")
+with open("output/pipeline_summary.json", "w") as f:
+    json.dump(results_summary, f, indent=2)
+
+print(f"\n🎉 Pipeline complete! {len(successful)} videos uploaded.")
 print("=" * 55)
