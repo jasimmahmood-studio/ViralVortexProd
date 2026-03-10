@@ -1,7 +1,8 @@
 """
 Step 1: Fetch Trending Topics
-Sources: YouTube API, YouTube scrape, BBC RSS, HackerNews, NewsAPI, Guardian RSS, fallback
-Wikipedia removed (403), Reddit removed (403), Google Trends removed (404)
+Sources: YouTube API, YouTube scrape, BBC RSS, HackerNews, Guardian RSS,
+         AP News RSS, NPR RSS, fallback
+Removed: Reuters (dead domain), Reddit (403), Wikipedia (403), Google Trends (404)
 """
 
 import os
@@ -16,10 +17,25 @@ YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "").strip()
 NEWS_API_KEY    = os.environ.get("NEWS_API_KEY", "").strip()
 
 HEADERS = {
-    "User-Agent": "ViralVortex/1.0 (https://github.com/jasimmahmood-studio/viralvortex; trending bot)",
-    "Accept": "application/json, text/html, */*",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+
+def _parse_rss(url, limit=5):
+    """Generic RSS parser — returns list of titles."""
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        r.raise_for_status()
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', r.text)
+        root = ET.fromstring(text.encode('utf-8'))
+        titles = [item.findtext("title") for item in root.findall(".//item")]
+        titles = [t.strip() for t in titles if t and len(t.strip()) > 10]
+        return titles[:limit]
+    except Exception as e:
+        print(f"⚠️  RSS error {url}: {e}")
+        return []
 
 
 # ────────────────────────────────────────────────────────────
@@ -51,10 +67,8 @@ def fetch_youtube_api():
 # ────────────────────────────────────────────────────────────
 def fetch_youtube_scrape():
     try:
-        r = requests.get(
-            "https://www.youtube.com/feed/trending",
-            headers=HEADERS, timeout=20
-        )
+        r = requests.get("https://www.youtube.com/feed/trending",
+                         headers=HEADERS, timeout=20)
         r.raise_for_status()
         titles = re.findall(r'"title":\{"runs":\[\{"text":"([^"]{10,100})"\}', r.text)
         seen, unique = set(), []
@@ -80,23 +94,14 @@ def fetch_bbc_rss():
     ]
     topics = []
     for url in feeds:
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=15)
-            r.raise_for_status()
-            text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', r.text)
-            root = ET.fromstring(text.encode('utf-8'))
-            titles = [item.findtext("title") for item in root.findall(".//item")]
-            titles = [t.strip() for t in titles if t and len(t.strip()) > 10]
-            topics.extend(titles[:5])
-        except Exception as e:
-            print(f"⚠️  BBC RSS error: {e}")
+        topics.extend(_parse_rss(url, limit=5))
     if topics:
         print(f"✅ BBC RSS: {len(topics)} topics")
     return topics
 
 
 # ────────────────────────────────────────────────────────────
-# METHOD 4: HackerNews Top Stories
+# METHOD 4: HackerNews
 # ────────────────────────────────────────────────────────────
 def fetch_hackernews():
     try:
@@ -105,9 +110,8 @@ def fetch_hackernews():
             headers=HEADERS, timeout=10
         )
         r.raise_for_status()
-        ids = r.json()[:8]
         topics = []
-        for story_id in ids:
+        for story_id in r.json()[:8]:
             try:
                 s = requests.get(
                     f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json",
@@ -126,58 +130,56 @@ def fetch_hackernews():
 
 
 # ────────────────────────────────────────────────────────────
-# METHOD 5: The Guardian RSS (free, no key needed)
+# METHOD 5: The Guardian RSS
 # ────────────────────────────────────────────────────────────
 def fetch_guardian_rss():
     feeds = [
         "https://www.theguardian.com/world/rss",
         "https://www.theguardian.com/technology/rss",
-        "https://www.theguardian.com/culture/rss",
     ]
     topics = []
     for url in feeds:
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=15)
-            r.raise_for_status()
-            text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', r.text)
-            root = ET.fromstring(text.encode('utf-8'))
-            titles = [item.findtext("title") for item in root.findall(".//item")]
-            titles = [t.strip() for t in titles if t and len(t.strip()) > 10]
-            topics.extend(titles[:4])
-        except Exception as e:
-            print(f"⚠️  Guardian RSS error: {e}")
+        topics.extend(_parse_rss(url, limit=5))
     if topics:
         print(f"✅ Guardian RSS: {len(topics)} topics")
     return topics
 
 
 # ────────────────────────────────────────────────────────────
-# METHOD 6: Reuters RSS (free, no key needed)
+# METHOD 6: AP News RSS
 # ────────────────────────────────────────────────────────────
-def fetch_reuters_rss():
+def fetch_ap_news():
     feeds = [
-        "https://feeds.reuters.com/reuters/topNews",
-        "https://feeds.reuters.com/reuters/technologyNews",
+        "https://feeds.apnews.com/rss/apf-topnews",
+        "https://feeds.apnews.com/rss/apf-technology",
+        "https://feeds.apnews.com/rss/apf-entertainment",
     ]
     topics = []
     for url in feeds:
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=15)
-            r.raise_for_status()
-            text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', r.text)
-            root = ET.fromstring(text.encode('utf-8'))
-            titles = [item.findtext("title") for item in root.findall(".//item")]
-            titles = [t.strip() for t in titles if t and len(t.strip()) > 10]
-            topics.extend(titles[:4])
-        except Exception as e:
-            print(f"⚠️  Reuters RSS error: {e}")
+        topics.extend(_parse_rss(url, limit=4))
     if topics:
-        print(f"✅ Reuters RSS: {len(topics)} topics")
+        print(f"✅ AP News RSS: {len(topics)} topics")
     return topics
 
 
 # ────────────────────────────────────────────────────────────
-# METHOD 7: NewsAPI (optional key)
+# METHOD 7: NPR News RSS
+# ────────────────────────────────────────────────────────────
+def fetch_npr_rss():
+    feeds = [
+        "https://feeds.npr.org/1001/rss.xml",   # News
+        "https://feeds.npr.org/1019/rss.xml",   # Technology
+    ]
+    topics = []
+    for url in feeds:
+        topics.extend(_parse_rss(url, limit=4))
+    if topics:
+        print(f"✅ NPR RSS: {len(topics)} topics")
+    return topics
+
+
+# ────────────────────────────────────────────────────────────
+# METHOD 8: NewsAPI (optional key)
 # ────────────────────────────────────────────────────────────
 def fetch_newsapi():
     if not NEWS_API_KEY:
@@ -198,7 +200,7 @@ def fetch_newsapi():
 
 
 # ────────────────────────────────────────────────────────────
-# METHOD 8: Evergreen fallback
+# METHOD 9: Evergreen fallback
 # ────────────────────────────────────────────────────────────
 def fetch_fallback_topics():
     topics = [
@@ -230,11 +232,12 @@ def get_trending_topics(limit=10, **kwargs):
     bbc_topics      = fetch_bbc_rss()
     hn_topics       = fetch_hackernews()
     guardian_topics = fetch_guardian_rss()
-    reuters_topics  = fetch_reuters_rss()
+    ap_topics       = fetch_ap_news()
+    npr_topics      = fetch_npr_rss()
     news_topics     = fetch_newsapi()
 
-    all_topics = (api_topics + scrape_topics + bbc_topics +
-                  hn_topics + guardian_topics + reuters_topics + news_topics)
+    all_topics = (api_topics + scrape_topics + bbc_topics + hn_topics +
+                  guardian_topics + ap_topics + npr_topics + news_topics)
 
     if not all_topics:
         print("⚠️  All sources failed — using fallback")
@@ -260,7 +263,8 @@ def get_trending_topics(limit=10, **kwargs):
             "bbc_rss":        len(bbc_topics),
             "hackernews":     len(hn_topics),
             "guardian_rss":   len(guardian_topics),
-            "reuters_rss":    len(reuters_topics),
+            "ap_news":        len(ap_topics),
+            "npr_rss":        len(npr_topics),
             "newsapi":        len(news_topics),
         },
         "timestamp": datetime.now().isoformat(),
