@@ -102,6 +102,15 @@ def upload_video(video_path, title, description, thumbnail_path=None, **kwargs):
         print(f"🔗 URL: https://www.youtube.com/watch?v={video_id}")
 
     except Exception as e:
+        err = str(e)
+        if "uploadLimitExceeded" in err:
+            raise RuntimeError(
+                "UPLOAD_LIMIT_EXCEEDED: YouTube daily upload limit reached.\n"
+                "Solutions:\n"
+                "  1. Verify your phone at youtube.com/verify\n"
+                "  2. Set VIDEOS_PER_RUN=3 in Railway Variables\n"
+                "  3. Wait 24 hours for limit to reset"
+            )
         raise RuntimeError(f"Video upload failed: {e}")
 
     # ── Upload thumbnail ─────────────────────────────────────

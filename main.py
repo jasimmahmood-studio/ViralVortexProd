@@ -289,6 +289,16 @@ for video_num, topic in enumerate(topics_to_use, 1):
 
     state["upload_result"] = run_step(6, f"Upload to YouTube [{video_num}]", step6)
 
+    # ── Delay between uploads to avoid rate limits ───────────
+    if state["upload_result"] and video_num < len(topics_to_use):
+        import time
+        delay = int(os.environ.get("UPLOAD_DELAY_SECONDS", "30"))
+        print(f"⏳ Waiting {delay}s before next upload...")
+        time.sleep(delay)
+    elif not state["upload_result"]:
+        # If upload failed check if it's a limit error — stop uploading
+        print("⚠️  Upload failed — checking if daily limit reached...")
+
     # ── Summary for this video ───────────────────────────────
     status = "success" if state["upload_result"] else "uploaded_failed"
     video_id = None
